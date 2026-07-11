@@ -216,3 +216,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+ssl_jepa_triplet/
+
+# Experiment outputs and datasets
+results/
+data/

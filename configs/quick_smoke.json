@@ -1,0 +1,12 @@
+{
+  "run_name": "quick_smoke",
+  "dataset": "cifar10",
+  "epochs": 5,
+  "batch_size": 64,
+  "triplet_weight": 0.5,
+  "negative_mode": "class",
+  "train_subset": 2000,
+  "eval_every": 5,
+  "probe_epochs": 10,
+  "output_dir": "./results"
+}
