@@ -1,0 +1,18 @@
+{
+  "run_name": "triplet_jepa",
+  "dataset": "cifar10",
+  "epochs": 100,
+  "batch_size": 128,
+  "triplet_weight": 0.5,
+  "negative_mode": "class",
+  "margin": 0.2,
+  "mask_ratio": 0.6,
+  "embed_dim": 256,
+  "ema_momentum": 0.996,
+  "lr": 0.0003,
+  "eval_every": 10,
+  "knn_k": 20,
+  "probe_epochs": 50,
+  "seed": 42,
+  "output_dir": "./results"
+}
