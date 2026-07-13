@@ -14,7 +14,7 @@ from tripletjepa.data import DatasetSpec, get_dataloaders
 from tripletjepa.eval import evaluate_encoder
 from tripletjepa.losses import TripletJEPALoss
 from tripletjepa.models import TripletJEPA
-from tripletjepa.views import block_mask, class_negatives, instance_negatives
+from tripletjepa.views import block_mask, class_negatives, instance_negatives, scramble_patches
 
 
 def set_seed(seed: int) -> None:
@@ -40,8 +40,9 @@ class TrainConfig:
     # Loss
     margin: float = 0.2
     triplet_weight: float = 0.5
-    negative_mode: str = "instance"  # instance | class
+    negative_mode: str = "instance"  # instance | class | scramble
     mask_ratio: float = 0.6
+    scramble_patch_size: int = 4
 
     # Optim
     epochs: int = 100
@@ -99,13 +100,21 @@ def train_one_epoch(
         z_anchor, z_positive = model(corrupt, images)
         z_pos = z_positive.detach()  # stop-grad on target path (I-JEPA style)
 
-        # z- = embedding of a different image (batch negative or different class).
+        # z- = different-image embedding, or same-image scrambled view.
         z_neg = None
         if cfg.triplet_weight > 0:
-            if cfg.negative_mode == "class":
+            if cfg.negative_mode == "scramble":
+                neg_view = scramble_patches(images, patch_size=cfg.scramble_patch_size)
+                z_neg = model.target_encoder(neg_view).detach()
+            elif cfg.negative_mode == "class":
                 z_neg = class_negatives(z_pos, labels)
-            else:
+            elif cfg.negative_mode == "instance":
                 z_neg = instance_negatives(z_pos)
+            else:
+                raise ValueError(
+                    f"Unknown negative_mode={cfg.negative_mode!r}; "
+                    "expected instance, class, or scramble"
+                )
 
         loss, stats = criterion(z_anchor, z_pos, z_neg)
         optimizer.zero_grad(set_to_none=True)
