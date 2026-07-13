@@ -2,7 +2,7 @@
   "run_name": "triplet_jepa",
   "dataset": "cifar10",
   "epochs": 100,
-  "batch_size": 128,
+  "batch_size": 256,
   "triplet_weight": 0.5,
   "negative_mode": "class",
   "margin": 0.2,
