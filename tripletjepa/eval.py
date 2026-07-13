@@ -74,7 +74,6 @@ def linear_probe(
     return (pred == y_te).float().mean().item()
 
 
-@torch.no_grad()
 def evaluate_encoder(
     encoder: nn.Module,
     train_loader: DataLoader,
@@ -88,6 +87,7 @@ def evaluate_encoder(
     test_x, test_y = extract_features(encoder, test_loader, device)
     return {
         "knn": knn_accuracy(train_x, train_y, test_x, test_y, k=knn_k),
+        # linear_probe needs autograd; must not run inside @torch.no_grad().
         "linear_probe": linear_probe(
             train_x, train_y, test_x, test_y, num_classes, epochs=probe_epochs, device=device
         ),
