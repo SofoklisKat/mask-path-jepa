@@ -26,6 +26,12 @@ PRESETS: dict[str, dict] = {
         "triplet_weight": 0.5,
         "negative_mode": "class",
     },
+    "triplet_scramble": {
+        "run_name": "triplet_scramble",
+        "triplet_weight": 0.5,
+        "negative_mode": "scramble",
+        "scramble_patch_size": 4,
+    },
 }
 
 
@@ -71,6 +77,11 @@ def main() -> None:
     parser.add_argument("--quick", action="store_true", help="20 epochs, 5k train subset")
     parser.add_argument("--aggregate-only", action="store_true")
     parser.add_argument(
+        "--with-scramble",
+        action="store_true",
+        help="Also run triplet_scramble preset (same-image patch shuffle negatives)",
+    )
+    parser.add_argument(
         "--download",
         action="store_true",
         help="Download datasets if missing (off by default)",
@@ -86,7 +97,10 @@ def main() -> None:
             "output_dir": str(out),
             "train_subset": 5000 if args.quick else None,
         }
-        for preset_name, preset in PRESETS.items():
+        presets = dict(PRESETS)
+        if not args.with_scramble:
+            presets.pop("triplet_scramble", None)
+        for preset_name, preset in presets.items():
             cfg_dict = {**base, **preset}
             print(f"\n=== Running {preset_name} ===")
             run_training(TrainConfig(**cfg_dict))

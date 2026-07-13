@@ -49,6 +49,7 @@ L          = L_JEPA + λ L_triplet
 |------|----------|-------------|
 | `instance` | Random other image in batch | Unsupervised |
 | `class` | Different class in batch | Label used only for mining |
+| `scramble` | Same image, shuffled patch grid | Unsupervised |
 
 ---
 

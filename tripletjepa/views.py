@@ -25,6 +25,33 @@ def block_mask(
     return out
 
 
+def scramble_patches(
+    x: torch.Tensor,
+    patch_size: int = 4,
+) -> torch.Tensor:
+    """Shuffle grid patches in-place to destroy global spatial context.
+
+    Same local patch content as the source image, but permuted positions act as a
+    hard negative view for triplet margin (complements block_mask corrupt views).
+    """
+    b, c, h, w = x.shape
+    if h % patch_size != 0 or w % patch_size != 0:
+        raise ValueError(f"Image size ({h}, {w}) must be divisible by patch_size={patch_size}")
+    gh, gw = h // patch_size, w // patch_size
+    n = gh * gw
+
+    patches = x.view(b, c, gh, patch_size, gw, patch_size)
+    patches = patches.permute(0, 1, 2, 4, 3, 5).contiguous().view(b, c, n, patch_size, patch_size)
+
+    perm = torch.argsort(torch.rand(b, n, device=x.device), dim=1)
+    idx = perm[:, None, :, None, None].expand(b, c, n, patch_size, patch_size)
+    shuffled = patches.gather(2, idx)
+
+    shuffled = shuffled.view(b, c, gh, gw, patch_size, patch_size)
+    shuffled = shuffled.permute(0, 1, 2, 4, 3, 5).contiguous()
+    return shuffled.view(b, c, h, w)
+
+
 def instance_negatives(z: torch.Tensor) -> torch.Tensor:
     """Unsupervised negative: shuffle batch so z-[i] is another image's embedding."""
     idx = torch.randperm(z.size(0), device=z.device)
