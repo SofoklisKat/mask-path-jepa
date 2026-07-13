@@ -83,7 +83,9 @@ def train_one_epoch(
 ) -> dict[str, float]:
     """One SSL epoch: corrupt view → predict clean latent + optional triplet margin."""
     model.train()
-    totals = {"loss": 0.0, "jepa": 0.0, "triplet": 0.0}
+    totals: dict[str, float] = {"loss": 0.0, "jepa": 0.0}
+    if cfg.triplet_weight > 0:
+        totals["triplet"] = 0.0
     n = 0
 
     for images, labels in loader:
@@ -98,14 +100,12 @@ def train_one_epoch(
         z_pos = z_positive.detach()  # stop-grad on target path (I-JEPA style)
 
         # z- = embedding of a different image (batch negative or different class).
+        z_neg = None
         if cfg.triplet_weight > 0:
             if cfg.negative_mode == "class":
                 z_neg = class_negatives(z_pos, labels)
             else:
                 z_neg = instance_negatives(z_pos)
-        else:
-            # λ=0 baseline: triplet term is zeroed by weight, but loss fn still expects z-.
-            z_neg = instance_negatives(z_pos)
 
         loss, stats = criterion(z_anchor, z_pos, z_neg)
         optimizer.zero_grad(set_to_none=True)
@@ -183,10 +183,16 @@ def run_training(cfg: TrainConfig) -> dict:
             row.update(metrics)
 
         history.append(row)
-        tag = (
-            f"epoch {epoch:03d}/{cfg.epochs} | loss {row['loss']:.4f} "
-            f"(jepa {row['jepa']:.4f}, triplet {row['triplet']:.4f})"
-        )
+        if cfg.triplet_weight > 0:
+            tag = (
+                f"epoch {epoch:03d}/{cfg.epochs} | loss {row['loss']:.4f} "
+                f"(jepa {row['jepa']:.4f}, triplet {row['triplet']:.4f})"
+            )
+        else:
+            tag = (
+                f"epoch {epoch:03d}/{cfg.epochs} | loss {row['loss']:.4f} "
+                f"(jepa {row['jepa']:.4f}, triplet n/a)"
+            )
         if "knn" in row:
             tag += f" | k-NN {row['knn']:.3f} | linear {row['linear_probe']:.3f}"
         print(tag)
