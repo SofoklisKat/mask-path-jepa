@@ -6,6 +6,7 @@
   "epochs": 100,
   "batch_size": 256,
   "triplet_weight": 0.0,
+  "vicreg_inv_weight": 25.0,
   "vicreg_var_weight": 25.0,
   "vicreg_cov_weight": 25.0,
   "margin": 0.2,

@@ -30,8 +30,7 @@ Use `anchor_mode: encoder_corrupt` to align JEPA/triplet on encoder features.
 
 - **Clean:** standard train augmentation (CIFAR-10: crop + flip).
 - **Corrupt (default):** multi-block masking (`mask_ratio=0.6`, 4×4 blocks on 32×32), I-JEPA inspired.
-- **Corrupt (curriculum):** `corrupt_schedule: blur_to_mask` — epoch 1 starts with light Gaussian blur (`blur_sigma_min`), blur and masked area ramp linearly, final epoch uses `blur_sigma_max` + full block mask (`mask_ratio`, often `1.0` for total occlusion).
-- **Corrupt (mask curriculum):** `corrupt_schedule: mask_curriculum` — block-mask ratio ramps `0 → mask_ratio` over epochs (CBM-style); used with `latent_vicreg` presets `*_curriculum`.
+- **Corrupt (curriculum):** `corrupt_schedule: blur_to_mask` or `mask_curriculum` — corruption is **patch-local** on a `patch_size×patch_size` grid (default 4×4 on 32×32, 64 tiles total). A random subset of tiles is blurred per image; unselected tiles stay sharp. Fraction ramps `patch_blur_ratio_min → mask_ratio` (default **10% → 60%**), σ per blurred tile ramps `blur_sigma_min → blur_sigma_max`. No whole-image blur, no zero masking.
 
 ### Loss
 
@@ -137,12 +136,14 @@ anchor_mode: predictor_corrupt
 ẑ = fθ(x_corrupt)
 anchor_mode: encoder_corrupt
 
-# VICReg on encoder outputs (both paths)
-L = L_JEPA + α·L_var(fθ(x_corrupt), fθ(x_clean)) + β·L_cov(...)
+# VICReg on encoder outputs (eval space); variance + covariance on both views
+L = λ·MSE(z_inv_a, z_inv_b) + μ·L_var(fθ(x_corrupt), fθ(x_clean)) + β·L_cov(...)
 ```
 
-- No EMA teacher; predictor is optional alignment head (BYOL/JEPA-style asymmetry).
-- VICReg always regularizes **encoder** features (same space as eval).
+- **Invariance** `λ=25`: MSE between corrupt/clean representations (replaces JEPA cosine in the loss).
+- **Align mode:** `z_inv_a = gφ(fθ(x_corrupt))`, `z_inv_b = stopgrad(fθ(x_clean))`.
+- **Encoder mode:** `z_inv_a = fθ(x_corrupt)`, `z_inv_b = fθ(x_clean)` (both branches train).
+- JEPA cosine is still **logged** as `jepa(log)` for monitoring, not optimized.
 
 Configs:
 - `configs/cifar100_latent_vicreg_align.json` — predictor + VICReg (recommended)

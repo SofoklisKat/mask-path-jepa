@@ -15,6 +15,7 @@ from tripletjepa.eval import evaluate_encoder
 from tripletjepa.losses import TripletJEPALoss
 from tripletjepa.models import TripletJEPA
 from tripletjepa.views import (
+    active_patch_blur_ratio,
     class_negatives,
     corrupt_progress,
     instance_negatives,
@@ -52,9 +53,12 @@ class TrainConfig:
     negative_mode: str = "instance"  # instance | class | scramble | scramble_class
     corrupt_schedule: str = "block"  # block | mask_curriculum | blur_to_mask
     mask_ratio: float = 0.6
+    patch_blur_ratio_min: float = 0.1
+    patch_size: int = 4
     blur_sigma_min: float = 0.5
     blur_sigma_max: float = 3.0
     scramble_patch_size: int = 4
+    vicreg_inv_weight: float = 0.0
     vicreg_var_weight: float = 0.0
     vicreg_cov_weight: float = 0.0
 
@@ -124,9 +128,9 @@ def train_one_epoch(
       negative = encoder(scramble).detach() + different-class batch embedding
 
     latent_vicreg mode (single encoder):
-      JEPA anchor = encoder(corrupt) OR predictor(encoder(corrupt))  # alignment head
-      JEPA positive = encoder(clean).detach()
-      VICReg always on encoder(corrupt) + encoder(clean)  # regularize eval space
+      Full VICReg: λ·MSE(inv) + μ·L_var + ν·L_cov on encoder(corrupt/clean).
+      Align mode: invariance on predictor(encoder(corrupt)) vs encoder(clean).
+      JEPA cosine is logged but not optimized when VICReg weights are active.
 
     jepa_ema mode (default):
       anchor   = predictor(encoder(corrupt))
@@ -136,9 +140,14 @@ def train_one_epoch(
     totals: dict[str, float] = {"loss": 0.0, "jepa": 0.0}
     if cfg.triplet_weight > 0:
         totals["triplet"] = 0.0
-    if cfg.vicreg_var_weight > 0:
+    use_vicreg = (
+        cfg.vicreg_inv_weight > 0
+        or cfg.vicreg_var_weight > 0
+        or cfg.vicreg_cov_weight > 0
+    )
+    if use_vicreg:
+        totals["vicreg_inv"] = 0.0
         totals["vicreg_var"] = 0.0
-    if cfg.vicreg_cov_weight > 0:
         totals["vicreg_cov"] = 0.0
     n = 0
     progress = corrupt_progress(epoch, cfg.epochs)
@@ -153,8 +162,10 @@ def train_one_epoch(
             schedule=cfg.corrupt_schedule,
             progress=progress,
             mask_ratio=cfg.mask_ratio,
+            patch_blur_ratio_min=cfg.patch_blur_ratio_min,
             blur_sigma_min=cfg.blur_sigma_min,
             blur_sigma_max=cfg.blur_sigma_max,
+            min_block=cfg.patch_size,
         )
 
         z_anchor, z_positive = model(corrupt, images, anchor_mode=cfg.anchor_mode)
@@ -164,6 +175,8 @@ def train_one_epoch(
         z_neg_extra = None
         z_vicreg_a = None
         z_vicreg_b = None
+        z_inv_a = None
+        z_inv_b = None
         if cfg.triplet_weight > 0:
             if cfg.negative_mode == "scramble":
                 neg_view = scramble_patches(images, patch_size=cfg.scramble_patch_size)
@@ -182,12 +195,18 @@ def train_one_epoch(
                     "expected instance, class, scramble, or scramble_class"
                 )
 
-        if cfg.vicreg_var_weight > 0 or cfg.vicreg_cov_weight > 0:
+        if use_vicreg:
             z_vicreg_a = model.encoder(corrupt)
             z_vicreg_b = model.encoder(images)
+            if cfg.vicreg_inv_weight > 0:
+                if cfg.anchor_mode == "predictor_corrupt":
+                    z_inv_a = model.predictor(z_vicreg_a)
+                    z_inv_b = z_vicreg_b.detach()
+                else:
+                    z_inv_a, z_inv_b = z_vicreg_a, z_vicreg_b
 
         loss, stats = criterion(
-            z_anchor, z_pos, z_neg, z_neg_extra, z_vicreg_a, z_vicreg_b
+            z_anchor, z_pos, z_neg, z_neg_extra, z_vicreg_a, z_vicreg_b, z_inv_a, z_inv_b
         )
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
@@ -223,6 +242,7 @@ def run_training(cfg: TrainConfig) -> dict:
         f"anchor_mode={cfg.anchor_mode} | negative_mode={cfg.negative_mode} | "
         f"corrupt_schedule={cfg.corrupt_schedule} | "
         f"triplet_weight={cfg.triplet_weight} | "
+        f"vicreg_inv_weight={cfg.vicreg_inv_weight} | "
         f"vicreg_var_weight={cfg.vicreg_var_weight} | "
         f"vicreg_cov_weight={cfg.vicreg_cov_weight}"
     )
@@ -256,12 +276,18 @@ def run_training(cfg: TrainConfig) -> dict:
     criterion = TripletJEPALoss(
         margin=cfg.margin,
         triplet_weight=cfg.triplet_weight,
+        vicreg_inv_weight=cfg.vicreg_inv_weight,
         vicreg_var_weight=cfg.vicreg_var_weight,
         vicreg_cov_weight=cfg.vicreg_cov_weight,
     )
 
     history: list[dict] = []
     t0 = time.time()
+    use_vicreg = (
+        cfg.vicreg_inv_weight > 0
+        or cfg.vicreg_var_weight > 0
+        or cfg.vicreg_cov_weight > 0
+    )
 
     for epoch in range(1, cfg.epochs + 1):
         train_stats, progress = train_one_epoch(
@@ -271,8 +297,9 @@ def run_training(cfg: TrainConfig) -> dict:
         row: dict = {"epoch": epoch, **train_stats, "lr": scheduler.get_last_lr()[0]}
         if cfg.corrupt_schedule in {"blur_to_mask", "mask_curriculum"}:
             row["corrupt_progress"] = progress
-            row["mask_ratio_active"] = progress * cfg.mask_ratio
-        if cfg.corrupt_schedule == "blur_to_mask":
+            row["patch_blur_ratio"] = active_patch_blur_ratio(
+                progress, cfg.patch_blur_ratio_min, cfg.mask_ratio
+            )
             row["blur_sigma"] = cfg.blur_sigma_min + progress * (
                 cfg.blur_sigma_max - cfg.blur_sigma_min
             )
@@ -291,21 +318,24 @@ def run_training(cfg: TrainConfig) -> dict:
             row.update(metrics)
 
         history.append(row)
-        parts = [f"epoch {epoch:03d}/{cfg.epochs} | loss {row['loss']:.4f}", f"jepa {row['jepa']:.4f}"]
+        parts = [f"epoch {epoch:03d}/{cfg.epochs} | loss {row['loss']:.4f}"]
         if cfg.triplet_weight > 0:
+            parts.append(f"jepa {row['jepa']:.4f}")
             parts.append(f"triplet {row['triplet']:.4f}")
-        elif cfg.vicreg_var_weight > 0 or cfg.vicreg_cov_weight > 0:
+        elif use_vicreg:
+            if "vicreg_inv" in row:
+                parts.append(f"inv {row['vicreg_inv']:.4f}")
             if "vicreg_var" in row:
                 parts.append(f"var {row['vicreg_var']:.4f}")
             if "vicreg_cov" in row:
                 parts.append(f"cov {row['vicreg_cov']:.4f}")
+            parts.append(f"jepa(log) {row['jepa']:.4f}")
         else:
+            parts.append(f"jepa {row['jepa']:.4f}")
             parts.append("triplet n/a")
-        if cfg.corrupt_schedule == "blur_to_mask":
+        if cfg.corrupt_schedule in {"blur_to_mask", "mask_curriculum"}:
             parts.append(f"blur σ {row['blur_sigma']:.2f}")
-            parts.append(f"mask {row['mask_ratio_active']:.2f}")
-        elif cfg.corrupt_schedule == "mask_curriculum":
-            parts.append(f"mask {row['mask_ratio_active']:.2f}")
+            parts.append(f"patch blur {row['patch_blur_ratio']:.2f}")
         tag = " (" + ", ".join(parts[1:]) + ")"
         tag = parts[0] + tag
         if "knn" in row:
@@ -322,11 +352,14 @@ def run_training(cfg: TrainConfig) -> dict:
         "triplet_weight": cfg.triplet_weight,
         "negative_mode": cfg.negative_mode,
         "corrupt_schedule": cfg.corrupt_schedule,
+        "patch_blur_ratio_min": cfg.patch_blur_ratio_min,
+        "patch_size": cfg.patch_size,
         "blur_sigma_min": cfg.blur_sigma_min,
         "blur_sigma_max": cfg.blur_sigma_max,
         "training_mode": cfg.training_mode,
         "use_ema_target": cfg.use_ema_target,
         "anchor_mode": cfg.anchor_mode,
+        "vicreg_inv_weight": cfg.vicreg_inv_weight,
         "vicreg_var_weight": cfg.vicreg_var_weight,
         "vicreg_cov_weight": cfg.vicreg_cov_weight,
         "margin": cfg.margin,
