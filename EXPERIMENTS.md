@@ -54,6 +54,7 @@ L          = L_JEPA + λ L_triplet
 | `instance` | Random other image in batch | Unsupervised |
 | `class` | Different class in batch | Label used only for mining |
 | `scramble` | Same image, shuffled patch grid | Unsupervised |
+| `scramble_class` | Scramble + different-class batch embedding | Layout + semantics |
 
 ---
 
@@ -104,7 +105,10 @@ training_mode: latent_triplet
 
 anchor   = fθ(x_corrupt)              # grad
 positive = stopgrad(fθ(x_clean))      # JEPA invariance
-negative = stopgrad(fθ(x_scramble))   # triplet separation
+negative = stopgrad(fθ(x_scramble))   # triplet: broken global layout
+negative = stopgrad(fθ(x_class))     # triplet: different-class context
+
+L_triplet = 0.5 · [margin(anchor, pos, scramble) + margin(anchor, pos, class)]
 
 L = L_JEPA + λ L_triplet
 ```

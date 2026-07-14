@@ -1,5 +1,5 @@
 {
-  "run_name": "latent_triplet",
+  "run_name": "latent_triplet_scramble_class",
   "dataset": "cifar100",
   "training_mode": "latent_triplet",
   "epochs": 100,

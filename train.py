@@ -20,7 +20,11 @@ def main() -> None:
     parser.add_argument("--dataset", type=str, choices=dataset_choices())
     parser.add_argument("--epochs", type=int)
     parser.add_argument("--triplet-weight", type=float)
-    parser.add_argument("--negative-mode", type=str, choices=["instance", "class", "scramble"])
+    parser.add_argument(
+        "--negative-mode",
+        type=str,
+        choices=["instance", "class", "scramble", "scramble_class"],
+    )
     parser.add_argument(
         "--training-mode",
         type=str,
