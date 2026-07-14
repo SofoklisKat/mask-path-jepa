@@ -28,10 +28,28 @@ def triplet_loss(
     return F.relu(d_pos - d_neg + margin).mean()
 
 
+def vicreg_variance(z: torch.Tensor, eps: float = 1e-4) -> torch.Tensor:
+    """Penalize low per-dimension std across the batch (anti-collapse)."""
+    std = torch.sqrt(z.var(dim=0) + eps)
+    return torch.mean(F.relu(1.0 - std))
+
+
+def vicreg_covariance(z: torch.Tensor) -> torch.Tensor:
+    """Penalize off-diagonal covariance entries (decorrelate latent dims)."""
+    z = z - z.mean(dim=0)
+    n = z.size(0)
+    denom = max(n - 1, 1)
+    cov = (z.T @ z) / denom
+    off_diag = cov - torch.diag(torch.diag(cov))
+    return off_diag.pow(2).sum() / z.size(1)
+
+
 @dataclass
 class TripletJEPALoss:
     margin: float = 0.2
     triplet_weight: float = 0.5
+    vicreg_var_weight: float = 0.0
+    vicreg_cov_weight: float = 0.0
 
     def __call__(
         self,
@@ -39,12 +57,16 @@ class TripletJEPALoss:
         z_positive: torch.Tensor,
         z_negative: torch.Tensor | None = None,
         z_negative_extra: torch.Tensor | None = None,
+        z_vicreg_a: torch.Tensor | None = None,
+        z_vicreg_b: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, dict[str, float]]:
         l_jepa = jepa_cosine_loss(z_anchor, z_positive)
         stats: dict[str, float] = {
             "loss": 0.0,  # filled below
             "jepa": l_jepa.item(),
         }
+        total = l_jepa
+
         if self.triplet_weight > 0:
             if z_negative is None:
                 raise ValueError("z_negative is required when triplet_weight > 0")
@@ -56,9 +78,17 @@ class TripletJEPALoss:
                 stats["triplet_scramble"] = l_triplet.item()
                 stats["triplet_class"] = l_extra.item()
                 l_triplet = 0.5 * (l_triplet + l_extra)
-            total = l_jepa + self.triplet_weight * l_triplet
+            total = total + self.triplet_weight * l_triplet
             stats["triplet"] = l_triplet.item()
-        else:
-            total = l_jepa
+
+        if self.vicreg_var_weight > 0 or self.vicreg_cov_weight > 0:
+            if z_vicreg_a is None or z_vicreg_b is None:
+                raise ValueError("z_vicreg_a and z_vicreg_b are required for VICReg terms")
+            l_var = vicreg_variance(z_vicreg_a) + vicreg_variance(z_vicreg_b)
+            l_cov = vicreg_covariance(z_vicreg_a) + vicreg_covariance(z_vicreg_b)
+            total = total + self.vicreg_var_weight * l_var + self.vicreg_cov_weight * l_cov
+            stats["vicreg_var"] = l_var.item()
+            stats["vicreg_cov"] = l_cov.item()
+
         stats["loss"] = total.item()
         return total, stats

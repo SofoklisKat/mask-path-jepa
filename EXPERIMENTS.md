@@ -119,6 +119,25 @@ L = L_JEPA + λ L_triplet
 
 Configs: `configs/cifar100_latent_triplet_jepa.json` (λ=0), `configs/cifar100_latent_triplet.json` (λ=0.05).
 
+### `latent_vicreg` mode (single encoder, no EMA)
+
+Replace EMA/triplet with VICReg anti-collapse terms on encoder outputs:
+
+```text
+training_mode: latent_vicreg
+
+z_c = fθ(x_corrupt)     # JEPA anchor + VICReg branch
+z_x = fθ(x_clean)       # JEPA positive (stop-grad) + VICReg branch
+
+L = L_JEPA + α·L_var(z_c, z_x) + β·L_cov(z_c, z_x)
+```
+
+- `L_var`: each latent dimension must have batch std ≥ 1
+- `L_cov`: off-diagonal covariance penalized (decorrelate dims)
+- Default weights from VICReg paper: `α=β=25`
+
+Config: `configs/cifar100_latent_vicreg.json`
+
 **Suggested ablations for paper:** λ ∈ {0.05, 0.1, 0.5}, margin m ∈ {0.1, 0.2}, with/without EMA.
 
 ---

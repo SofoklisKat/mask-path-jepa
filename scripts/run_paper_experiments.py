@@ -46,6 +46,13 @@ PRESETS: dict[str, dict] = {
         "negative_mode": "scramble_class",
         "scramble_patch_size": 4,
     },
+    "latent_vicreg": {
+        "run_name": "latent_vicreg",
+        "training_mode": "latent_vicreg",
+        "triplet_weight": 0.0,
+        "vicreg_var_weight": 25.0,
+        "vicreg_cov_weight": 25.0,
+    },
 }
 
 
@@ -101,6 +108,11 @@ def main() -> None:
         help="Also run latent_triplet_jepa and latent_triplet (single encoder, no EMA)",
     )
     parser.add_argument(
+        "--with-latent-vicreg",
+        action="store_true",
+        help="Also run latent_vicreg (single encoder + VICReg, no EMA)",
+    )
+    parser.add_argument(
         "--download",
         action="store_true",
         help="Download datasets if missing (off by default)",
@@ -123,6 +135,8 @@ def main() -> None:
         if not args.with_latent_triplet:
             presets.pop("latent_triplet_jepa", None)
             presets.pop("latent_triplet", None)
+        if not args.with_latent_vicreg:
+            presets.pop("latent_vicreg", None)
         for preset_name, preset in presets.items():
             cfg_dict = {**base, **preset}
             print(f"\n=== Running {preset_name} ===")
