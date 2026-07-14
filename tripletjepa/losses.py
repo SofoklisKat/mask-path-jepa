@@ -28,6 +28,11 @@ def triplet_loss(
     return F.relu(d_pos - d_neg + margin).mean()
 
 
+def vicreg_invariance(z_a: torch.Tensor, z_b: torch.Tensor) -> torch.Tensor:
+    """MSE between two views (VICReg alignment / invariance term)."""
+    return F.mse_loss(z_a, z_b)
+
+
 def vicreg_variance(z: torch.Tensor, eps: float = 1e-4) -> torch.Tensor:
     """Penalize low per-dimension std across the batch (anti-collapse)."""
     std = torch.sqrt(z.var(dim=0) + eps)
@@ -48,6 +53,7 @@ def vicreg_covariance(z: torch.Tensor) -> torch.Tensor:
 class TripletJEPALoss:
     margin: float = 0.2
     triplet_weight: float = 0.5
+    vicreg_inv_weight: float = 0.0
     vicreg_var_weight: float = 0.0
     vicreg_cov_weight: float = 0.0
 
@@ -59,13 +65,37 @@ class TripletJEPALoss:
         z_negative_extra: torch.Tensor | None = None,
         z_vicreg_a: torch.Tensor | None = None,
         z_vicreg_b: torch.Tensor | None = None,
+        z_inv_a: torch.Tensor | None = None,
+        z_inv_b: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, dict[str, float]]:
         l_jepa = jepa_cosine_loss(z_anchor, z_positive)
-        stats: dict[str, float] = {
-            "loss": 0.0,  # filled below
-            "jepa": l_jepa.item(),
-        }
-        total = l_jepa
+        stats: dict[str, float] = {"jepa": l_jepa.item()}
+        use_vicreg = (
+            self.vicreg_inv_weight > 0
+            or self.vicreg_var_weight > 0
+            or self.vicreg_cov_weight > 0
+        )
+
+        if use_vicreg:
+            if z_vicreg_a is None or z_vicreg_b is None:
+                raise ValueError("z_vicreg_a and z_vicreg_b are required for VICReg")
+            total = torch.tensor(0.0, device=z_vicreg_a.device)
+            if self.vicreg_inv_weight > 0:
+                if z_inv_a is None or z_inv_b is None:
+                    raise ValueError("z_inv_a and z_inv_b are required for VICReg invariance")
+                l_inv = vicreg_invariance(z_inv_a, z_inv_b)
+                total = total + self.vicreg_inv_weight * l_inv
+                stats["vicreg_inv"] = l_inv.item()
+            if self.vicreg_var_weight > 0:
+                l_var = vicreg_variance(z_vicreg_a) + vicreg_variance(z_vicreg_b)
+                total = total + self.vicreg_var_weight * l_var
+                stats["vicreg_var"] = l_var.item()
+            if self.vicreg_cov_weight > 0:
+                l_cov = vicreg_covariance(z_vicreg_a) + vicreg_covariance(z_vicreg_b)
+                total = total + self.vicreg_cov_weight * l_cov
+                stats["vicreg_cov"] = l_cov.item()
+        else:
+            total = l_jepa
 
         if self.triplet_weight > 0:
             if z_negative is None:
@@ -80,15 +110,6 @@ class TripletJEPALoss:
                 l_triplet = 0.5 * (l_triplet + l_extra)
             total = total + self.triplet_weight * l_triplet
             stats["triplet"] = l_triplet.item()
-
-        if self.vicreg_var_weight > 0 or self.vicreg_cov_weight > 0:
-            if z_vicreg_a is None or z_vicreg_b is None:
-                raise ValueError("z_vicreg_a and z_vicreg_b are required for VICReg terms")
-            l_var = vicreg_variance(z_vicreg_a) + vicreg_variance(z_vicreg_b)
-            l_cov = vicreg_covariance(z_vicreg_a) + vicreg_covariance(z_vicreg_b)
-            total = total + self.vicreg_var_weight * l_var + self.vicreg_cov_weight * l_cov
-            stats["vicreg_var"] = l_var.item()
-            stats["vicreg_cov"] = l_cov.item()
 
         stats["loss"] = total.item()
         return total, stats

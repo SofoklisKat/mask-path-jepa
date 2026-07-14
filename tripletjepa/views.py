@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 
 import torch
+import torch.nn.functional as F
 import torchvision.transforms.functional as TF
 
 
@@ -28,13 +29,41 @@ def block_mask(
     return out
 
 
-def gaussian_blur(x: torch.Tensor, sigma: float) -> torch.Tensor:
+def gaussian_blur(
+    x: torch.Tensor,
+    sigma: float,
+    *,
+    max_kernel: int | None = None,
+) -> torch.Tensor:
     """Isotropic Gaussian blur; no-op when sigma is negligible."""
     if sigma <= 1e-3:
         return x
     radius = max(1, int(math.ceil(3.0 * sigma)))
     kernel = 2 * radius + 1
+    if max_kernel is not None:
+        k = max_kernel if max_kernel % 2 == 1 else max_kernel - 1
+        kernel = min(kernel, max(3, k))
     return TF.gaussian_blur(x, kernel_size=[kernel, kernel], sigma=[sigma, sigma])
+
+
+def blur_patch_tile(patch: torch.Tensor, sigma: float, patch_size: int) -> torch.Tensor:
+    """Blur one grid tile; uses local box blur (safe for 4×4 at any curriculum σ).
+
+    ``torchvision.gaussian_blur`` needs padding < tile size, so large σ on 4×4
+    patches crashes. Box-kernel size tracks σ instead: σ≈0.5 → 3×3, σ≥1.5 → full tile.
+    """
+    if sigma <= 1e-3:
+        return patch
+    max_k = patch_size if patch_size % 2 == 1 else patch_size - 1
+    k = min(max_k, 2 * int(math.ceil(sigma)) + 1)
+    if k % 2 == 0:
+        k -= 1
+    k = max(1, k)
+    if k <= 1:
+        return patch
+    pad = k // 2
+    padded = F.pad(patch, (pad, pad, pad, pad), mode="reflect")
+    return F.avg_pool2d(padded, kernel_size=k, stride=1)
 
 
 def corrupt_progress(epoch: int, epochs: int) -> float:
@@ -44,19 +73,65 @@ def corrupt_progress(epoch: int, epochs: int) -> float:
     return (epoch - 1) / (epochs - 1)
 
 
-def progressive_mask(
+def blur_patches(
+    x: torch.Tensor,
+    mask_ratio: float,
+    sigma: float,
+    *,
+    patch_size: int = 4,
+) -> torch.Tensor:
+    """Blur a random subset of non-overlapping image patches; others stay sharp.
+
+    Corruption is **patch-local**: each selected 4×4 tile is blurred on its own.
+    The rest of the image is left unchanged (no whole-image blur).
+    """
+    if mask_ratio <= 0 or sigma <= 1e-3:
+        return x
+    b, c, h, w = x.shape
+    if h % patch_size != 0 or w % patch_size != 0:
+        raise ValueError(f"Image size ({h}, {w}) must be divisible by patch_size={patch_size}")
+    out = x.clone()
+    grid_h, grid_w = h // patch_size, w // patch_size
+    n_patches = max(1, int(mask_ratio * grid_h * grid_w))
+
+    for i in range(b):
+        positions = torch.randperm(grid_h * grid_w, device=x.device)[:n_patches]
+        for pos in positions:
+            gh = int(pos // grid_w)
+            gw = int(pos % grid_w)
+            top, left = gh * patch_size, gw * patch_size
+            patch = x[i : i + 1, :, top : top + patch_size, left : left + patch_size]
+            out[i : i + 1, :, top : top + patch_size, left : left + patch_size] = blur_patch_tile(
+                patch, sigma, patch_size
+            )
+    return out
+
+
+def active_patch_blur_ratio(
+    progress: float,
+    ratio_min: float,
+    ratio_max: float,
+) -> float:
+    """Interpolate patch-blur fraction between ``ratio_min`` and ``ratio_max``."""
+    progress = float(max(0.0, min(1.0, progress)))
+    return ratio_min + progress * (ratio_max - ratio_min)
+
+
+def progressive_patch_blur(
     x: torch.Tensor,
     progress: float,
     *,
     mask_ratio_end: float = 0.6,
-    min_block: int = 4,
+    mask_ratio_start: float = 0.1,
+    sigma_min: float = 0.5,
+    sigma_max: float = 3.0,
+    patch_size: int = 4,
 ) -> torch.Tensor:
-    """Ramp block-mask ratio from 0 (clean context) to ``mask_ratio_end`` (CBM-style)."""
+    """Ramp patch-local blur: more tiles corrupted + stronger σ per tile (not whole-image)."""
     progress = float(max(0.0, min(1.0, progress)))
-    mask_ratio = progress * mask_ratio_end
-    if mask_ratio <= 0:
-        return x
-    return block_mask(x, mask_ratio=mask_ratio, min_block=min_block)
+    patch_ratio = active_patch_blur_ratio(progress, mask_ratio_start, mask_ratio_end)
+    sigma = sigma_min + progress * (sigma_max - sigma_min)
+    return blur_patches(x, mask_ratio=patch_ratio, sigma=sigma, patch_size=patch_size)
 
 
 def progressive_blur_to_mask(
@@ -66,20 +141,19 @@ def progressive_blur_to_mask(
     sigma_min: float = 0.5,
     sigma_max: float = 3.0,
     mask_ratio_end: float = 0.6,
+    mask_ratio_start: float = 0.1,
     min_block: int = 4,
 ) -> torch.Tensor:
-    """Ramp corrupt views from light blur to heavy blur + block masking.
-
-    progress=0: slight blur only (no masking).
-    progress=1: strong blur with ``mask_ratio_end`` area zeroed (I-JEPA blocks).
-    """
-    progress = float(max(0.0, min(1.0, progress)))
-    sigma = sigma_min + progress * (sigma_max - sigma_min)
-    mask_ratio = progress * mask_ratio_end
-    out = gaussian_blur(x, sigma)
-    if mask_ratio > 0:
-        out = block_mask(out, mask_ratio=mask_ratio, min_block=min_block)
-    return out
+    """Alias: patch-blur curriculum (kept for config compatibility)."""
+    return progressive_patch_blur(
+        x,
+        progress,
+        mask_ratio_end=mask_ratio_end,
+        mask_ratio_start=mask_ratio_start,
+        sigma_min=sigma_min,
+        sigma_max=sigma_max,
+        patch_size=min_block,
+    )
 
 
 def make_corrupt_view(
@@ -88,6 +162,7 @@ def make_corrupt_view(
     schedule: str,
     progress: float = 1.0,
     mask_ratio: float = 0.6,
+    patch_blur_ratio_min: float = 0.1,
     blur_sigma_min: float = 0.5,
     blur_sigma_max: float = 3.0,
     min_block: int = 4,
@@ -96,11 +171,14 @@ def make_corrupt_view(
     if schedule == "block":
         return block_mask(x, mask_ratio=mask_ratio, min_block=min_block)
     if schedule == "mask_curriculum":
-        return progressive_mask(
+        return progressive_patch_blur(
             x,
             progress,
             mask_ratio_end=mask_ratio,
-            min_block=min_block,
+            mask_ratio_start=patch_blur_ratio_min,
+            sigma_min=blur_sigma_min,
+            sigma_max=blur_sigma_max,
+            patch_size=min_block,
         )
     if schedule == "blur_to_mask":
         return progressive_blur_to_mask(
@@ -109,6 +187,7 @@ def make_corrupt_view(
             sigma_min=blur_sigma_min,
             sigma_max=blur_sigma_max,
             mask_ratio_end=mask_ratio,
+            mask_ratio_start=patch_blur_ratio_min,
             min_block=min_block,
         )
     raise ValueError(
