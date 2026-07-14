@@ -169,6 +169,38 @@ PRESETS: dict[str, dict] = {
         "blur_sigma_min": 0.5,
         "blur_sigma_max": 3.0,
     },
+    # --- Single encoder + SIGReg (LeJEPA-style, no EMA) ---
+    "latent_sigreg_encoder": {
+        "run_name": "latent_sigreg_encoder",
+        "training_mode": "latent_sigreg",
+        "anchor_mode": "encoder_corrupt",
+        "triplet_weight": 0.0,
+        "sigreg_weight": 0.05,
+        "sigreg_num_slices": 256,
+        "corrupt_schedule": "block",
+    },
+    "latent_sigreg_align": {
+        "run_name": "latent_sigreg_align",
+        "training_mode": "latent_sigreg",
+        "anchor_mode": "predictor_corrupt",
+        "triplet_weight": 0.0,
+        "sigreg_weight": 0.05,
+        "sigreg_num_slices": 256,
+        "corrupt_schedule": "block",
+    },
+    "latent_sigreg_align_curriculum": {
+        "run_name": "latent_sigreg_align_curriculum",
+        "training_mode": "latent_sigreg",
+        "anchor_mode": "predictor_corrupt",
+        "triplet_weight": 0.0,
+        "sigreg_weight": 0.05,
+        "sigreg_num_slices": 256,
+        "corrupt_schedule": "mask_curriculum",
+        "patch_blur_ratio_min": 0.1,
+        "mask_ratio": 0.6,
+        "blur_sigma_min": 0.5,
+        "blur_sigma_max": 3.0,
+    },
 }
 
 SUITES: dict[str, list[str]] = {
@@ -201,6 +233,11 @@ SUITES: dict[str, list[str]] = {
         "latent_vicreg_align",
         "latent_vicreg_encoder_curriculum",
         "latent_vicreg_align_curriculum",
+    ],
+    "latent_sigreg": [
+        "latent_sigreg_encoder",
+        "latent_sigreg_align",
+        "latent_sigreg_align_curriculum",
     ],
     "full": [
         "jepa_baseline",

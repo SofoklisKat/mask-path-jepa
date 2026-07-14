@@ -49,6 +49,35 @@ def vicreg_covariance(z: torch.Tensor) -> torch.Tensor:
     return off_diag.pow(2).sum() / z.size(1)
 
 
+def sigreg_loss(
+    x: torch.Tensor,
+    global_step: int,
+    num_slices: int = 256,
+    num_points: int = 17,
+) -> torch.Tensor:
+    """Sketched Isotropic Gaussian Regularization (Epps-Pulley), LeJEPA Alg. 1.
+
+    Pushes batch embeddings toward N(0, I) via random 1D slice normality tests.
+    """
+    n, _ = x.shape
+    device = x.device
+    gen = torch.Generator(device=device)
+    gen.manual_seed(int(global_step))
+
+    directions = torch.randn(x.size(1), num_slices, generator=gen, device=device)
+    directions = directions / directions.norm(p=2, dim=0, keepdim=True)
+    proj = x @ directions  # (N, num_slices)
+
+    t = torch.linspace(-5.0, 5.0, num_points, device=device)
+    target_cf = torch.exp(-0.5 * t**2)
+
+    x_t = proj.unsqueeze(-1) * t  # (N, num_slices, T)
+    ecf = torch.exp(1j * x_t).mean(dim=0)  # (num_slices, T)
+    err = (ecf - target_cf).abs().square() * target_cf
+    per_slice = torch.trapz(err.real, t, dim=1) * n
+    return per_slice.mean()
+
+
 @dataclass
 class TripletJEPALoss:
     margin: float = 0.2
@@ -56,6 +85,8 @@ class TripletJEPALoss:
     vicreg_inv_weight: float = 0.0
     vicreg_var_weight: float = 0.0
     vicreg_cov_weight: float = 0.0
+    sigreg_weight: float = 0.0
+    sigreg_num_slices: int = 256
 
     def __call__(
         self,
@@ -67,6 +98,8 @@ class TripletJEPALoss:
         z_vicreg_b: torch.Tensor | None = None,
         z_inv_a: torch.Tensor | None = None,
         z_inv_b: torch.Tensor | None = None,
+        z_sigreg: torch.Tensor | None = None,
+        global_step: int = 0,
     ) -> tuple[torch.Tensor, dict[str, float]]:
         l_jepa = jepa_cosine_loss(z_anchor, z_positive)
         stats: dict[str, float] = {"jepa": l_jepa.item()}
@@ -75,8 +108,18 @@ class TripletJEPALoss:
             or self.vicreg_var_weight > 0
             or self.vicreg_cov_weight > 0
         )
+        use_sigreg = self.sigreg_weight > 0
 
-        if use_vicreg:
+        if use_sigreg:
+            if z_inv_a is None or z_inv_b is None or z_sigreg is None:
+                raise ValueError("z_inv_a, z_inv_b, and z_sigreg are required for SIGReg")
+            l_inv = vicreg_invariance(z_inv_a, z_inv_b)
+            l_sig = sigreg_loss(z_sigreg, global_step, self.sigreg_num_slices)
+            lam = self.sigreg_weight
+            total = (1.0 - lam) * l_inv + lam * l_sig
+            stats["sigreg_inv"] = l_inv.item()
+            stats["sigreg"] = l_sig.item()
+        elif use_vicreg:
             if z_vicreg_a is None or z_vicreg_b is None:
                 raise ValueError("z_vicreg_a and z_vicreg_b are required for VICReg")
             total = torch.tensor(0.0, device=z_vicreg_a.device)

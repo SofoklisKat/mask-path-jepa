@@ -43,7 +43,7 @@ class TrainConfig:
     # Model
     embed_dim: int = 256
     ema_momentum: float = 0.996
-    training_mode: str = "jepa_ema"  # jepa_ema | latent_triplet | latent_vicreg
+    training_mode: str = "jepa_ema"  # jepa_ema | latent_triplet | latent_vicreg | latent_sigreg
     use_ema_target: bool = True
     anchor_mode: str = "predictor_corrupt"  # predictor_corrupt | encoder_corrupt | encoder_clean
 
@@ -61,6 +61,8 @@ class TrainConfig:
     vicreg_inv_weight: float = 0.0
     vicreg_var_weight: float = 0.0
     vicreg_cov_weight: float = 0.0
+    sigreg_weight: float = 0.0
+    sigreg_num_slices: int = 256
 
     # Optim
     epochs: int = 100
@@ -104,9 +106,13 @@ def resolve_training_mode(cfg: TrainConfig) -> TrainConfig:
         # anchor_mode from config: encoder_corrupt (direct) or predictor_corrupt (alignment head).
         cfg.use_ema_target = False
         return cfg
+    if cfg.training_mode == "latent_sigreg":
+        # One encoder, LeJEPA-style MSE invariance + SIGReg anti-collapse (no EMA teacher).
+        cfg.use_ema_target = False
+        return cfg
     raise ValueError(
         f"Unknown training_mode={cfg.training_mode!r}; "
-        "expected jepa_ema, latent_triplet, or latent_vicreg"
+        "expected jepa_ema, latent_triplet, latent_vicreg, or latent_sigreg"
     )
 
 
@@ -119,6 +125,7 @@ def train_one_epoch(
     spec: DatasetSpec,
     cfg: TrainConfig,
     epoch: int,
+    steps_per_epoch: int,
 ) -> dict[str, float]:
     """One SSL epoch in latent space.
 
@@ -131,6 +138,11 @@ def train_one_epoch(
       Full VICReg: λ·MSE(inv) + μ·L_var + ν·L_cov on encoder(corrupt/clean).
       Align mode: invariance on predictor(encoder(corrupt)) vs encoder(clean).
       JEPA cosine is logged but not optimized when VICReg weights are active.
+
+    latent_sigreg mode (single encoder):
+      LeJEPA-style: (1-λ)·MSE(inv) + λ·SIGReg(encoder embeddings).
+      Align mode: MSE(predictor(corrupt), encoder(clean)).
+      SIGReg on concat(encoder(corrupt), encoder(clean)).
 
     jepa_ema mode (default):
       anchor   = predictor(encoder(corrupt))
@@ -145,14 +157,18 @@ def train_one_epoch(
         or cfg.vicreg_var_weight > 0
         or cfg.vicreg_cov_weight > 0
     )
+    use_sigreg = cfg.sigreg_weight > 0
     if use_vicreg:
         totals["vicreg_inv"] = 0.0
         totals["vicreg_var"] = 0.0
         totals["vicreg_cov"] = 0.0
+    if use_sigreg:
+        totals["sigreg_inv"] = 0.0
+        totals["sigreg"] = 0.0
     n = 0
     progress = corrupt_progress(epoch, cfg.epochs)
 
-    for images, labels in loader:
+    for batch_idx, (images, labels) in enumerate(loader):
         images = images.to(device, non_blocking=True)
         labels = labels.to(device, non_blocking=True)
 
@@ -177,6 +193,8 @@ def train_one_epoch(
         z_vicreg_b = None
         z_inv_a = None
         z_inv_b = None
+        z_sigreg = None
+        global_step = (epoch - 1) * steps_per_epoch + batch_idx
         if cfg.triplet_weight > 0:
             if cfg.negative_mode == "scramble":
                 neg_view = scramble_patches(images, patch_size=cfg.scramble_patch_size)
@@ -195,18 +213,29 @@ def train_one_epoch(
                     "expected instance, class, scramble, or scramble_class"
                 )
 
-        if use_vicreg:
+        if use_vicreg or use_sigreg:
             z_vicreg_a = model.encoder(corrupt)
             z_vicreg_b = model.encoder(images)
-            if cfg.vicreg_inv_weight > 0:
+            if cfg.vicreg_inv_weight > 0 or use_sigreg:
                 if cfg.anchor_mode == "predictor_corrupt":
                     z_inv_a = model.predictor(z_vicreg_a)
                     z_inv_b = z_vicreg_b.detach()
                 else:
                     z_inv_a, z_inv_b = z_vicreg_a, z_vicreg_b
+            if use_sigreg:
+                z_sigreg = torch.cat([z_vicreg_a, z_vicreg_b], dim=0)
 
         loss, stats = criterion(
-            z_anchor, z_pos, z_neg, z_neg_extra, z_vicreg_a, z_vicreg_b, z_inv_a, z_inv_b
+            z_anchor,
+            z_pos,
+            z_neg,
+            z_neg_extra,
+            z_vicreg_a,
+            z_vicreg_b,
+            z_inv_a,
+            z_inv_b,
+            z_sigreg,
+            global_step,
         )
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
@@ -244,7 +273,9 @@ def run_training(cfg: TrainConfig) -> dict:
         f"triplet_weight={cfg.triplet_weight} | "
         f"vicreg_inv_weight={cfg.vicreg_inv_weight} | "
         f"vicreg_var_weight={cfg.vicreg_var_weight} | "
-        f"vicreg_cov_weight={cfg.vicreg_cov_weight}"
+        f"vicreg_cov_weight={cfg.vicreg_cov_weight} | "
+        f"sigreg_weight={cfg.sigreg_weight} | "
+        f"sigreg_num_slices={cfg.sigreg_num_slices}"
     )
 
     train_loader, test_loader, spec = get_dataloaders(
@@ -279,6 +310,8 @@ def run_training(cfg: TrainConfig) -> dict:
         vicreg_inv_weight=cfg.vicreg_inv_weight,
         vicreg_var_weight=cfg.vicreg_var_weight,
         vicreg_cov_weight=cfg.vicreg_cov_weight,
+        sigreg_weight=cfg.sigreg_weight,
+        sigreg_num_slices=cfg.sigreg_num_slices,
     )
 
     history: list[dict] = []
@@ -288,10 +321,20 @@ def run_training(cfg: TrainConfig) -> dict:
         or cfg.vicreg_var_weight > 0
         or cfg.vicreg_cov_weight > 0
     )
+    use_sigreg = cfg.sigreg_weight > 0
+    steps_per_epoch = len(train_loader)
 
     for epoch in range(1, cfg.epochs + 1):
         train_stats, progress = train_one_epoch(
-            model, train_loader, optimizer, criterion, device, spec, cfg, epoch
+            model,
+            train_loader,
+            optimizer,
+            criterion,
+            device,
+            spec,
+            cfg,
+            epoch,
+            steps_per_epoch,
         )
         scheduler.step()
         row: dict = {"epoch": epoch, **train_stats, "lr": scheduler.get_last_lr()[0]}
@@ -322,6 +365,12 @@ def run_training(cfg: TrainConfig) -> dict:
         if cfg.triplet_weight > 0:
             parts.append(f"jepa {row['jepa']:.4f}")
             parts.append(f"triplet {row['triplet']:.4f}")
+        elif use_sigreg:
+            if "sigreg_inv" in row:
+                parts.append(f"inv {row['sigreg_inv']:.4f}")
+            if "sigreg" in row:
+                parts.append(f"sigreg {row['sigreg']:.4f}")
+            parts.append(f"jepa(log) {row['jepa']:.4f}")
         elif use_vicreg:
             if "vicreg_inv" in row:
                 parts.append(f"inv {row['vicreg_inv']:.4f}")
@@ -362,6 +411,8 @@ def run_training(cfg: TrainConfig) -> dict:
         "vicreg_inv_weight": cfg.vicreg_inv_weight,
         "vicreg_var_weight": cfg.vicreg_var_weight,
         "vicreg_cov_weight": cfg.vicreg_cov_weight,
+        "sigreg_weight": cfg.sigreg_weight,
+        "sigreg_num_slices": cfg.sigreg_num_slices,
         "margin": cfg.margin,
         "epochs": cfg.epochs,
         "params": params,
