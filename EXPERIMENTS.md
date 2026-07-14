@@ -149,6 +149,28 @@ Configs:
 - `configs/cifar100_latent_vicreg_align.json` — predictor + VICReg (recommended)
 - `configs/cifar100_latent_vicreg.json` — encoder-only + VICReg (ablation)
 
+### `latent_sigreg` mode (single encoder, LeJEPA-style)
+
+Replace VICReg var/cov with one **SIGReg** term (Epps–Pulley, [LeJEPA](https://arxiv.org/abs/2511.08544)):
+
+```text
+training_mode: latent_sigreg
+
+L = (1-λ)·MSE(z_inv_a, z_inv_b) + λ·SIGReg(concat(encoder(corrupt), encoder(clean)))
+```
+
+- **λ = `sigreg_weight`** (default **0.05**, not 25 — SIGReg statistic scale differs from VICReg).
+- **`sigreg_num_slices`**: random projection directions (default 256).
+- Align mode: `z_inv_a = predictor(encoder(corrupt))`, `z_inv_b = stopgrad(encoder(clean))`.
+
+Configs:
+- `configs/cifar100_latent_sigreg_align.json` — predictor + SIGReg
+- `configs/cifar100_latent_sigreg_align_curriculum.json` — + patch-blur curriculum
+
+```bash
+PYTHONPATH=. python train.py --config configs/cifar100_latent_sigreg_align_curriculum.json
+```
+
 **Suggested ablations for paper:** λ ∈ {0.05, 0.1, 0.5}, margin m ∈ {0.1, 0.2}, with/without EMA.
 
 **Heavy triplet (λ=25, mirrors VICReg α=β=25):** `latent_triplet_heavy`, `latent_triplet_align_heavy`, `triplet_heavy_ema` — expect training instability / collapsed eval (λ=0.5 already hurt badly).
