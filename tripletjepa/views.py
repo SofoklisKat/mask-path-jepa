@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import math
+
 import torch
+import torchvision.transforms.functional as TF
 
 
 def block_mask(
@@ -23,6 +26,95 @@ def block_mask(
             top, left = gh * block, gw * block
             out[i, :, top : top + block, left : left + block] = 0.0
     return out
+
+
+def gaussian_blur(x: torch.Tensor, sigma: float) -> torch.Tensor:
+    """Isotropic Gaussian blur; no-op when sigma is negligible."""
+    if sigma <= 1e-3:
+        return x
+    radius = max(1, int(math.ceil(3.0 * sigma)))
+    kernel = 2 * radius + 1
+    return TF.gaussian_blur(x, kernel_size=[kernel, kernel], sigma=[sigma, sigma])
+
+
+def corrupt_progress(epoch: int, epochs: int) -> float:
+    """Training progress in [0, 1] for corruption curriculum (epoch 1 → 0, last → 1)."""
+    if epochs <= 1:
+        return 1.0
+    return (epoch - 1) / (epochs - 1)
+
+
+def progressive_mask(
+    x: torch.Tensor,
+    progress: float,
+    *,
+    mask_ratio_end: float = 0.6,
+    min_block: int = 4,
+) -> torch.Tensor:
+    """Ramp block-mask ratio from 0 (clean context) to ``mask_ratio_end`` (CBM-style)."""
+    progress = float(max(0.0, min(1.0, progress)))
+    mask_ratio = progress * mask_ratio_end
+    if mask_ratio <= 0:
+        return x
+    return block_mask(x, mask_ratio=mask_ratio, min_block=min_block)
+
+
+def progressive_blur_to_mask(
+    x: torch.Tensor,
+    progress: float,
+    *,
+    sigma_min: float = 0.5,
+    sigma_max: float = 3.0,
+    mask_ratio_end: float = 0.6,
+    min_block: int = 4,
+) -> torch.Tensor:
+    """Ramp corrupt views from light blur to heavy blur + block masking.
+
+    progress=0: slight blur only (no masking).
+    progress=1: strong blur with ``mask_ratio_end`` area zeroed (I-JEPA blocks).
+    """
+    progress = float(max(0.0, min(1.0, progress)))
+    sigma = sigma_min + progress * (sigma_max - sigma_min)
+    mask_ratio = progress * mask_ratio_end
+    out = gaussian_blur(x, sigma)
+    if mask_ratio > 0:
+        out = block_mask(out, mask_ratio=mask_ratio, min_block=min_block)
+    return out
+
+
+def make_corrupt_view(
+    x: torch.Tensor,
+    *,
+    schedule: str,
+    progress: float = 1.0,
+    mask_ratio: float = 0.6,
+    blur_sigma_min: float = 0.5,
+    blur_sigma_max: float = 3.0,
+    min_block: int = 4,
+) -> torch.Tensor:
+    """Build the context (corrupt) view for JEPA training."""
+    if schedule == "block":
+        return block_mask(x, mask_ratio=mask_ratio, min_block=min_block)
+    if schedule == "mask_curriculum":
+        return progressive_mask(
+            x,
+            progress,
+            mask_ratio_end=mask_ratio,
+            min_block=min_block,
+        )
+    if schedule == "blur_to_mask":
+        return progressive_blur_to_mask(
+            x,
+            progress,
+            sigma_min=blur_sigma_min,
+            sigma_max=blur_sigma_max,
+            mask_ratio_end=mask_ratio,
+            min_block=min_block,
+        )
+    raise ValueError(
+        f"Unknown corrupt_schedule={schedule!r}; "
+        "expected 'block', 'mask_curriculum', or 'blur_to_mask'"
+    )
 
 
 def scramble_patches(

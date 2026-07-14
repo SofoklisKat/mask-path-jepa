@@ -1,0 +1,21 @@
+{
+  "run_name": "jepa_blur_curriculum",
+  "dataset": "cifar100",
+  "training_mode": "jepa_ema",
+  "epochs": 100,
+  "batch_size": 256,
+  "triplet_weight": 0.0,
+  "negative_mode": "instance",
+  "corrupt_schedule": "blur_to_mask",
+  "blur_sigma_min": 0.5,
+  "blur_sigma_max": 3.0,
+  "mask_ratio": 1.0,
+  "margin": 0.2,
+  "embed_dim": 256,
+  "lr": 0.0003,
+  "eval_every": 10,
+  "knn_k": 20,
+  "probe_epochs": 50,
+  "seed": 42,
+  "output_dir": "./results/paper_cifar100"
+}

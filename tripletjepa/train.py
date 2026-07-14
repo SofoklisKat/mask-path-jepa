@@ -14,7 +14,13 @@ from tripletjepa.data import DatasetSpec, get_dataloaders
 from tripletjepa.eval import evaluate_encoder
 from tripletjepa.losses import TripletJEPALoss
 from tripletjepa.models import TripletJEPA
-from tripletjepa.views import block_mask, class_negatives, instance_negatives, scramble_patches
+from tripletjepa.views import (
+    class_negatives,
+    corrupt_progress,
+    instance_negatives,
+    make_corrupt_view,
+    scramble_patches,
+)
 
 
 def set_seed(seed: int) -> None:
@@ -44,7 +50,10 @@ class TrainConfig:
     margin: float = 0.2
     triplet_weight: float = 0.5
     negative_mode: str = "instance"  # instance | class | scramble | scramble_class
+    corrupt_schedule: str = "block"  # block | mask_curriculum | blur_to_mask
     mask_ratio: float = 0.6
+    blur_sigma_min: float = 0.5
+    blur_sigma_max: float = 3.0
     scramble_patch_size: int = 4
     vicreg_var_weight: float = 0.0
     vicreg_cov_weight: float = 0.0
@@ -85,7 +94,6 @@ def resolve_training_mode(cfg: TrainConfig) -> TrainConfig:
     if cfg.training_mode == "latent_triplet":
         # One encoder, latent-space JEPA + triplet regularizer (no EMA teacher).
         cfg.use_ema_target = False
-        cfg.anchor_mode = "encoder_corrupt"
         return cfg
     if cfg.training_mode == "latent_vicreg":
         # One encoder, JEPA invariance + VICReg anti-collapse (no EMA teacher).
@@ -106,6 +114,7 @@ def train_one_epoch(
     device: torch.device,
     spec: DatasetSpec,
     cfg: TrainConfig,
+    epoch: int,
 ) -> dict[str, float]:
     """One SSL epoch in latent space.
 
@@ -132,13 +141,21 @@ def train_one_epoch(
     if cfg.vicreg_cov_weight > 0:
         totals["vicreg_cov"] = 0.0
     n = 0
+    progress = corrupt_progress(epoch, cfg.epochs)
 
     for images, labels in loader:
         images = images.to(device, non_blocking=True)
         labels = labels.to(device, non_blocking=True)
 
-        # Context view: masked image. Target view: clean (augmented) image.
-        corrupt = block_mask(images, mask_ratio=cfg.mask_ratio)
+        # Context view: corrupted image (mask and/or blur). Target view: clean augmentation.
+        corrupt = make_corrupt_view(
+            images,
+            schedule=cfg.corrupt_schedule,
+            progress=progress,
+            mask_ratio=cfg.mask_ratio,
+            blur_sigma_min=cfg.blur_sigma_min,
+            blur_sigma_max=cfg.blur_sigma_max,
+        )
 
         z_anchor, z_positive = model(corrupt, images, anchor_mode=cfg.anchor_mode)
         z_pos = z_positive.detach()  # stop-grad on positive path
@@ -183,7 +200,7 @@ def train_one_epoch(
             if k in stats:
                 totals[k] += stats[k] * bs
 
-    return {k: v / max(n, 1) for k, v in totals.items()}
+    return {k: v / max(n, 1) for k, v in totals.items()}, progress
 
 
 def resolve_device(device_str: str) -> torch.device:
@@ -204,6 +221,7 @@ def run_training(cfg: TrainConfig) -> dict:
     print(
         f"training_mode={cfg.training_mode} | use_ema_target={cfg.use_ema_target} | "
         f"anchor_mode={cfg.anchor_mode} | negative_mode={cfg.negative_mode} | "
+        f"corrupt_schedule={cfg.corrupt_schedule} | "
         f"triplet_weight={cfg.triplet_weight} | "
         f"vicreg_var_weight={cfg.vicreg_var_weight} | "
         f"vicreg_cov_weight={cfg.vicreg_cov_weight}"
@@ -246,11 +264,18 @@ def run_training(cfg: TrainConfig) -> dict:
     t0 = time.time()
 
     for epoch in range(1, cfg.epochs + 1):
-        train_stats = train_one_epoch(
-            model, train_loader, optimizer, criterion, device, spec, cfg
+        train_stats, progress = train_one_epoch(
+            model, train_loader, optimizer, criterion, device, spec, cfg, epoch
         )
         scheduler.step()
         row: dict = {"epoch": epoch, **train_stats, "lr": scheduler.get_last_lr()[0]}
+        if cfg.corrupt_schedule in {"blur_to_mask", "mask_curriculum"}:
+            row["corrupt_progress"] = progress
+            row["mask_ratio_active"] = progress * cfg.mask_ratio
+        if cfg.corrupt_schedule == "blur_to_mask":
+            row["blur_sigma"] = cfg.blur_sigma_min + progress * (
+                cfg.blur_sigma_max - cfg.blur_sigma_min
+            )
 
         if epoch % cfg.eval_every == 0 or epoch == cfg.epochs:
             # Paper metrics: frozen encoder only (predictor is not used at eval).
@@ -276,6 +301,11 @@ def run_training(cfg: TrainConfig) -> dict:
                 parts.append(f"cov {row['vicreg_cov']:.4f}")
         else:
             parts.append("triplet n/a")
+        if cfg.corrupt_schedule == "blur_to_mask":
+            parts.append(f"blur σ {row['blur_sigma']:.2f}")
+            parts.append(f"mask {row['mask_ratio_active']:.2f}")
+        elif cfg.corrupt_schedule == "mask_curriculum":
+            parts.append(f"mask {row['mask_ratio_active']:.2f}")
         tag = " (" + ", ".join(parts[1:]) + ")"
         tag = parts[0] + tag
         if "knn" in row:
@@ -291,6 +321,9 @@ def run_training(cfg: TrainConfig) -> dict:
         "dataset": cfg.dataset,
         "triplet_weight": cfg.triplet_weight,
         "negative_mode": cfg.negative_mode,
+        "corrupt_schedule": cfg.corrupt_schedule,
+        "blur_sigma_min": cfg.blur_sigma_min,
+        "blur_sigma_max": cfg.blur_sigma_max,
         "training_mode": cfg.training_mode,
         "use_ema_target": cfg.use_ema_target,
         "anchor_mode": cfg.anchor_mode,
