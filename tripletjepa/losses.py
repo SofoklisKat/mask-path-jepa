@@ -19,9 +19,12 @@ def triplet_loss(
     negative: torch.Tensor,
     margin: float = 0.2,
 ) -> torch.Tensor:
-    """Margin ranking: anchor closer to positive than negative by at least margin."""
-    d_pos = (anchor - positive).pow(2).sum(dim=-1)
-    d_neg = (anchor - negative).pow(2).sum(dim=-1)
+    """Margin ranking on L2-normalized embeddings (geometry, not vector scale)."""
+    anchor_n = F.normalize(anchor, dim=-1)
+    positive_n = F.normalize(positive, dim=-1)
+    negative_n = F.normalize(negative, dim=-1)
+    d_pos = (anchor_n - positive_n).pow(2).sum(dim=-1)
+    d_neg = (anchor_n - negative_n).pow(2).sum(dim=-1)
     return F.relu(d_pos - d_neg + margin).mean()
 
 

@@ -36,6 +36,9 @@ class TrainConfig:
     # Model
     embed_dim: int = 256
     ema_momentum: float = 0.996
+    training_mode: str = "jepa_ema"  # jepa_ema | latent_triplet
+    use_ema_target: bool = True
+    anchor_mode: str = "predictor_corrupt"  # predictor_corrupt | encoder_corrupt | encoder_clean
 
     # Loss
     margin: float = 0.2
@@ -73,6 +76,21 @@ class TrainConfig:
         Path(path).write_text(json.dumps(asdict(self), indent=2))
 
 
+def resolve_training_mode(cfg: TrainConfig) -> TrainConfig:
+    """Map high-level training modes to encoder/target/anchor settings."""
+    if cfg.training_mode == "jepa_ema":
+        return cfg
+    if cfg.training_mode == "latent_triplet":
+        # One encoder, latent-space JEPA + triplet regularizer (no EMA teacher).
+        cfg.use_ema_target = False
+        cfg.anchor_mode = "encoder_corrupt"
+        return cfg
+    raise ValueError(
+        f"Unknown training_mode={cfg.training_mode!r}; "
+        "expected jepa_ema or latent_triplet"
+    )
+
+
 def train_one_epoch(
     model: TripletJEPA,
     loader: DataLoader,
@@ -82,7 +100,17 @@ def train_one_epoch(
     spec: DatasetSpec,
     cfg: TrainConfig,
 ) -> dict[str, float]:
-    """One SSL epoch: corrupt view → predict clean latent + optional triplet margin."""
+    """One SSL epoch in latent space.
+
+    latent_triplet mode (single encoder):
+      anchor   = encoder(corrupt)           with grad
+      positive = encoder(clean).detach()    stop-grad
+      negative = encoder(scramble).detach() stop-grad triplet regularizer
+
+    jepa_ema mode (default):
+      anchor   = predictor(encoder(corrupt))
+      positive = target_encoder(clean).detach()
+    """
     model.train()
     totals: dict[str, float] = {"loss": 0.0, "jepa": 0.0}
     if cfg.triplet_weight > 0:
@@ -96,16 +124,14 @@ def train_one_epoch(
         # Context view: masked image. Target view: clean (augmented) image.
         corrupt = block_mask(images, mask_ratio=cfg.mask_ratio)
 
-        # ẑ = predictor(encoder(corrupt)),  z+ = target_encoder(clean)
-        z_anchor, z_positive = model(corrupt, images)
-        z_pos = z_positive.detach()  # stop-grad on target path (I-JEPA style)
+        z_anchor, z_positive = model(corrupt, images, anchor_mode=cfg.anchor_mode)
+        z_pos = z_positive.detach()  # stop-grad on positive path
 
-        # z- = different-image embedding, or same-image scrambled view.
         z_neg = None
         if cfg.triplet_weight > 0:
             if cfg.negative_mode == "scramble":
                 neg_view = scramble_patches(images, patch_size=cfg.scramble_patch_size)
-                z_neg = model.target_encoder(neg_view).detach()
+                z_neg = model.encode_target(neg_view).detach()
             elif cfg.negative_mode == "class":
                 z_neg = class_negatives(z_pos, labels)
             elif cfg.negative_mode == "instance":
@@ -120,7 +146,7 @@ def train_one_epoch(
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
         optimizer.step()
-        model.update_target_encoder()  # EMA: target_encoder ← m·target + (1-m)·encoder
+        model.update_target_encoder()
 
         bs = images.size(0)
         n += bs
@@ -137,12 +163,19 @@ def resolve_device(device_str: str) -> torch.device:
 
 
 def run_training(cfg: TrainConfig) -> dict:
+    cfg = resolve_training_mode(cfg)
     set_seed(cfg.seed)
     device = resolve_device(cfg.device)
 
     out = Path(cfg.output_dir) / cfg.run_name
     out.mkdir(parents=True, exist_ok=True)
     cfg.to_json(out / "config.json")
+
+    print(
+        f"training_mode={cfg.training_mode} | use_ema_target={cfg.use_ema_target} | "
+        f"anchor_mode={cfg.anchor_mode} | negative_mode={cfg.negative_mode} | "
+        f"triplet_weight={cfg.triplet_weight}"
+    )
 
     train_loader, test_loader, spec = get_dataloaders(
         cfg.dataset,
@@ -157,11 +190,15 @@ def run_training(cfg: TrainConfig) -> dict:
         in_channels=spec.in_channels,
         embed_dim=cfg.embed_dim,
         ema_momentum=cfg.ema_momentum,
+        use_ema_target=cfg.use_ema_target,
     ).to(device)
-    params = model.param_count()
+    params = model.param_count(cfg.anchor_mode)
 
+    train_params = list(model.encoder.parameters())
+    if cfg.anchor_mode == "predictor_corrupt":
+        train_params += list(model.predictor.parameters())
     optimizer = optim.AdamW(
-        list(model.encoder.parameters()) + list(model.predictor.parameters()),
+        train_params,
         lr=cfg.lr,
         weight_decay=cfg.weight_decay,
     )
@@ -215,6 +252,9 @@ def run_training(cfg: TrainConfig) -> dict:
         "dataset": cfg.dataset,
         "triplet_weight": cfg.triplet_weight,
         "negative_mode": cfg.negative_mode,
+        "training_mode": cfg.training_mode,
+        "use_ema_target": cfg.use_ema_target,
+        "anchor_mode": cfg.anchor_mode,
         "margin": cfg.margin,
         "epochs": cfg.epochs,
         "params": params,

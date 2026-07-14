@@ -32,6 +32,20 @@ PRESETS: dict[str, dict] = {
         "negative_mode": "scramble",
         "scramble_patch_size": 4,
     },
+    "latent_triplet_jepa": {
+        "run_name": "latent_triplet_jepa",
+        "training_mode": "latent_triplet",
+        "triplet_weight": 0.0,
+        "negative_mode": "scramble",
+        "scramble_patch_size": 4,
+    },
+    "latent_triplet": {
+        "run_name": "latent_triplet",
+        "training_mode": "latent_triplet",
+        "triplet_weight": 0.05,
+        "negative_mode": "scramble",
+        "scramble_patch_size": 4,
+    },
 }
 
 
@@ -79,7 +93,12 @@ def main() -> None:
     parser.add_argument(
         "--with-scramble",
         action="store_true",
-        help="Also run triplet_scramble preset (same-image patch shuffle negatives)",
+        help="Also run triplet_scramble preset (EMA + predictor)",
+    )
+    parser.add_argument(
+        "--with-latent-triplet",
+        action="store_true",
+        help="Also run latent_triplet_jepa and latent_triplet (single encoder, no EMA)",
     )
     parser.add_argument(
         "--download",
@@ -96,10 +115,14 @@ def main() -> None:
             "eval_every": 5 if args.quick else 10,
             "output_dir": str(out),
             "train_subset": 5000 if args.quick else None,
+            "download": args.download,
         }
         presets = dict(PRESETS)
         if not args.with_scramble:
             presets.pop("triplet_scramble", None)
+        if not args.with_latent_triplet:
+            presets.pop("latent_triplet_jepa", None)
+            presets.pop("latent_triplet", None)
         for preset_name, preset in presets.items():
             cfg_dict = {**base, **preset}
             print(f"\n=== Running {preset_name} ===")
