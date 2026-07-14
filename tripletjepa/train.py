@@ -89,8 +89,8 @@ def resolve_training_mode(cfg: TrainConfig) -> TrainConfig:
         return cfg
     if cfg.training_mode == "latent_vicreg":
         # One encoder, JEPA invariance + VICReg anti-collapse (no EMA teacher).
+        # anchor_mode from config: encoder_corrupt (direct) or predictor_corrupt (alignment head).
         cfg.use_ema_target = False
-        cfg.anchor_mode = "encoder_corrupt"
         return cfg
     raise ValueError(
         f"Unknown training_mode={cfg.training_mode!r}; "
@@ -113,6 +113,11 @@ def train_one_epoch(
       anchor   = encoder(corrupt)           with grad
       positive = encoder(clean).detach()    stop-grad
       negative = encoder(scramble).detach() + different-class batch embedding
+
+    latent_vicreg mode (single encoder):
+      JEPA anchor = encoder(corrupt) OR predictor(encoder(corrupt))  # alignment head
+      JEPA positive = encoder(clean).detach()
+      VICReg always on encoder(corrupt) + encoder(clean)  # regularize eval space
 
     jepa_ema mode (default):
       anchor   = predictor(encoder(corrupt))

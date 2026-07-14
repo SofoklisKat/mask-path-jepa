@@ -47,8 +47,17 @@ PRESETS: dict[str, dict] = {
         "scramble_patch_size": 4,
     },
     "latent_vicreg": {
-        "run_name": "latent_vicreg",
+        "run_name": "latent_vicreg_encoder",
         "training_mode": "latent_vicreg",
+        "anchor_mode": "encoder_corrupt",
+        "triplet_weight": 0.0,
+        "vicreg_var_weight": 25.0,
+        "vicreg_cov_weight": 25.0,
+    },
+    "latent_vicreg_align": {
+        "run_name": "latent_vicreg_align",
+        "training_mode": "latent_vicreg",
+        "anchor_mode": "predictor_corrupt",
         "triplet_weight": 0.0,
         "vicreg_var_weight": 25.0,
         "vicreg_cov_weight": 25.0,
@@ -137,6 +146,7 @@ def main() -> None:
             presets.pop("latent_triplet", None)
         if not args.with_latent_vicreg:
             presets.pop("latent_vicreg", None)
+            presets.pop("latent_vicreg_align", None)
         for preset_name, preset in presets.items():
             cfg_dict = {**base, **preset}
             print(f"\n=== Running {preset_name} ===")
