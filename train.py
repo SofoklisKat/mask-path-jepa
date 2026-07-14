@@ -28,7 +28,7 @@ def main() -> None:
     parser.add_argument(
         "--training-mode",
         type=str,
-        choices=["jepa_ema", "latent_triplet"],
+        choices=["jepa_ema", "latent_triplet", "latent_vicreg"],
     )
     parser.add_argument("--use-ema-target", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument(

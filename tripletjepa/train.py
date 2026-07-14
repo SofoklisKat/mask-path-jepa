@@ -36,7 +36,7 @@ class TrainConfig:
     # Model
     embed_dim: int = 256
     ema_momentum: float = 0.996
-    training_mode: str = "jepa_ema"  # jepa_ema | latent_triplet
+    training_mode: str = "jepa_ema"  # jepa_ema | latent_triplet | latent_vicreg
     use_ema_target: bool = True
     anchor_mode: str = "predictor_corrupt"  # predictor_corrupt | encoder_corrupt | encoder_clean
 
@@ -46,6 +46,8 @@ class TrainConfig:
     negative_mode: str = "instance"  # instance | class | scramble | scramble_class
     mask_ratio: float = 0.6
     scramble_patch_size: int = 4
+    vicreg_var_weight: float = 0.0
+    vicreg_cov_weight: float = 0.0
 
     # Optim
     epochs: int = 100
@@ -85,9 +87,14 @@ def resolve_training_mode(cfg: TrainConfig) -> TrainConfig:
         cfg.use_ema_target = False
         cfg.anchor_mode = "encoder_corrupt"
         return cfg
+    if cfg.training_mode == "latent_vicreg":
+        # One encoder, JEPA invariance + VICReg anti-collapse (no EMA teacher).
+        cfg.use_ema_target = False
+        cfg.anchor_mode = "encoder_corrupt"
+        return cfg
     raise ValueError(
         f"Unknown training_mode={cfg.training_mode!r}; "
-        "expected jepa_ema or latent_triplet"
+        "expected jepa_ema, latent_triplet, or latent_vicreg"
     )
 
 
@@ -115,6 +122,10 @@ def train_one_epoch(
     totals: dict[str, float] = {"loss": 0.0, "jepa": 0.0}
     if cfg.triplet_weight > 0:
         totals["triplet"] = 0.0
+    if cfg.vicreg_var_weight > 0:
+        totals["vicreg_var"] = 0.0
+    if cfg.vicreg_cov_weight > 0:
+        totals["vicreg_cov"] = 0.0
     n = 0
 
     for images, labels in loader:
@@ -129,6 +140,8 @@ def train_one_epoch(
 
         z_neg = None
         z_neg_extra = None
+        z_vicreg_a = None
+        z_vicreg_b = None
         if cfg.triplet_weight > 0:
             if cfg.negative_mode == "scramble":
                 neg_view = scramble_patches(images, patch_size=cfg.scramble_patch_size)
@@ -147,7 +160,13 @@ def train_one_epoch(
                     "expected instance, class, scramble, or scramble_class"
                 )
 
-        loss, stats = criterion(z_anchor, z_pos, z_neg, z_neg_extra)
+        if cfg.vicreg_var_weight > 0 or cfg.vicreg_cov_weight > 0:
+            z_vicreg_a = model.encoder(corrupt)
+            z_vicreg_b = model.encoder(images)
+
+        loss, stats = criterion(
+            z_anchor, z_pos, z_neg, z_neg_extra, z_vicreg_a, z_vicreg_b
+        )
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
         optimizer.step()
@@ -180,7 +199,9 @@ def run_training(cfg: TrainConfig) -> dict:
     print(
         f"training_mode={cfg.training_mode} | use_ema_target={cfg.use_ema_target} | "
         f"anchor_mode={cfg.anchor_mode} | negative_mode={cfg.negative_mode} | "
-        f"triplet_weight={cfg.triplet_weight}"
+        f"triplet_weight={cfg.triplet_weight} | "
+        f"vicreg_var_weight={cfg.vicreg_var_weight} | "
+        f"vicreg_cov_weight={cfg.vicreg_cov_weight}"
     )
 
     train_loader, test_loader, spec = get_dataloaders(
@@ -209,7 +230,12 @@ def run_training(cfg: TrainConfig) -> dict:
         weight_decay=cfg.weight_decay,
     )
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=cfg.epochs)
-    criterion = TripletJEPALoss(margin=cfg.margin, triplet_weight=cfg.triplet_weight)
+    criterion = TripletJEPALoss(
+        margin=cfg.margin,
+        triplet_weight=cfg.triplet_weight,
+        vicreg_var_weight=cfg.vicreg_var_weight,
+        vicreg_cov_weight=cfg.vicreg_cov_weight,
+    )
 
     history: list[dict] = []
     t0 = time.time()
@@ -235,16 +261,18 @@ def run_training(cfg: TrainConfig) -> dict:
             row.update(metrics)
 
         history.append(row)
+        parts = [f"epoch {epoch:03d}/{cfg.epochs} | loss {row['loss']:.4f}", f"jepa {row['jepa']:.4f}"]
         if cfg.triplet_weight > 0:
-            tag = (
-                f"epoch {epoch:03d}/{cfg.epochs} | loss {row['loss']:.4f} "
-                f"(jepa {row['jepa']:.4f}, triplet {row['triplet']:.4f})"
-            )
+            parts.append(f"triplet {row['triplet']:.4f}")
+        elif cfg.vicreg_var_weight > 0 or cfg.vicreg_cov_weight > 0:
+            if "vicreg_var" in row:
+                parts.append(f"var {row['vicreg_var']:.4f}")
+            if "vicreg_cov" in row:
+                parts.append(f"cov {row['vicreg_cov']:.4f}")
         else:
-            tag = (
-                f"epoch {epoch:03d}/{cfg.epochs} | loss {row['loss']:.4f} "
-                f"(jepa {row['jepa']:.4f}, triplet n/a)"
-            )
+            parts.append("triplet n/a")
+        tag = " (" + ", ".join(parts[1:]) + ")"
+        tag = parts[0] + tag
         if "knn" in row:
             tag += f" | k-NN {row['knn']:.3f} | linear {row['linear_probe']:.3f}"
         print(tag)
@@ -261,6 +289,8 @@ def run_training(cfg: TrainConfig) -> dict:
         "training_mode": cfg.training_mode,
         "use_ema_target": cfg.use_ema_target,
         "anchor_mode": cfg.anchor_mode,
+        "vicreg_var_weight": cfg.vicreg_var_weight,
+        "vicreg_cov_weight": cfg.vicreg_cov_weight,
         "margin": cfg.margin,
         "epochs": cfg.epochs,
         "params": params,
