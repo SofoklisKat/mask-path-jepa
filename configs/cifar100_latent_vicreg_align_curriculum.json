@@ -1,0 +1,21 @@
+{
+  "run_name": "latent_vicreg_align_curriculum",
+  "dataset": "cifar100",
+  "training_mode": "latent_vicreg",
+  "anchor_mode": "predictor_corrupt",
+  "epochs": 100,
+  "batch_size": 256,
+  "triplet_weight": 0.0,
+  "vicreg_var_weight": 25.0,
+  "vicreg_cov_weight": 25.0,
+  "corrupt_schedule": "mask_curriculum",
+  "margin": 0.2,
+  "mask_ratio": 0.6,
+  "embed_dim": 256,
+  "lr": 0.0003,
+  "eval_every": 10,
+  "knn_k": 20,
+  "probe_epochs": 50,
+  "seed": 42,
+  "output_dir": "./results/paper_cifar100"
+}

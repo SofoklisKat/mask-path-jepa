@@ -29,7 +29,9 @@ Use `anchor_mode: encoder_corrupt` to align JEPA/triplet on encoder features.
 ### Views
 
 - **Clean:** standard train augmentation (CIFAR-10: crop + flip).
-- **Corrupt:** multi-block masking (`mask_ratio=0.6`, 4×4 blocks on 32×32), I-JEPA inspired.
+- **Corrupt (default):** multi-block masking (`mask_ratio=0.6`, 4×4 blocks on 32×32), I-JEPA inspired.
+- **Corrupt (curriculum):** `corrupt_schedule: blur_to_mask` — epoch 1 starts with light Gaussian blur (`blur_sigma_min`), blur and masked area ramp linearly, final epoch uses `blur_sigma_max` + full block mask (`mask_ratio`, often `1.0` for total occlusion).
+- **Corrupt (mask curriculum):** `corrupt_schedule: mask_curriculum` — block-mask ratio ramps `0 → mask_ratio` over epochs (CBM-style); used with `latent_vicreg` presets `*_curriculum`.
 
 ### Loss
 
@@ -148,6 +150,13 @@ Configs:
 
 **Suggested ablations for paper:** λ ∈ {0.05, 0.1, 0.5}, margin m ∈ {0.1, 0.2}, with/without EMA.
 
+**Heavy triplet (λ=25, mirrors VICReg α=β=25):** `latent_triplet_heavy`, `latent_triplet_align_heavy`, `triplet_heavy_ema` — expect training instability / collapsed eval (λ=0.5 already hurt badly).
+
+```bash
+PYTHONPATH=. python scripts/run_paper_experiments.py \
+  --dataset cifar100 --suite ablation --only latent_triplet_heavy
+```
+
 ---
 
 ## 6. Reproduction commands
@@ -164,13 +173,21 @@ python train.py --config configs/cifar10_triplet_jepa.json
 # Full comparison table (3 baselines + optional scramble)
 python scripts/run_paper_experiments.py --dataset cifar10 --epochs 100
 
-# CIFAR-100 main suite
+# CIFAR-100 main suite (all experiments)
 PYTHONPATH=. python scripts/run_paper_experiments.py \
-  --dataset cifar100 --epochs 100 --output-dir ./results/paper_cifar100
+  --dataset cifar100 --suite full --output-dir ./results/paper_cifar100
 
-# Optional fourth preset: scramble negatives
+# Skip runs already finished; only aggregate table
 PYTHONPATH=. python scripts/run_paper_experiments.py \
-  --dataset cifar100 --epochs 100 --output-dir ./results/paper_cifar100 --with-scramble
+  --dataset cifar100 --suite full --output-dir ./results/paper_cifar100 \
+  --skip-existing --aggregate-only
+
+# Quick smoke (20 epochs, 5k subset)
+PYTHONPATH=. python scripts/run_paper_experiments.py --dataset cifar100 --suite full --quick
+
+# Run one experiment
+PYTHONPATH=. python scripts/run_paper_experiments.py \
+  --dataset cifar100 --only latent_vicreg_align
 
 # Fast comparison for iteration
 python scripts/run_paper_experiments.py --quick
@@ -181,7 +198,9 @@ Results land in `results/<run_name>/`:
 - `results.json` — metrics history + final numbers
 - `encoder.pt` — frozen encoder weights
 
-Aggregate table: `results/paper_cifar10/TABLE.md`
+Suites: `core` (3 EMA baselines), `ema`, `latent_triplet`, `latent_vicreg`, `full` (8 runs).
+
+Aggregate table: `results/paper_cifar100/TABLE.md`
 
 ---
 

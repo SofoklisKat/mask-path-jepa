@@ -1,0 +1,20 @@
+{
+  "run_name": "latent_triplet_heavy",
+  "dataset": "cifar100",
+  "training_mode": "latent_triplet",
+  "anchor_mode": "encoder_corrupt",
+  "epochs": 100,
+  "batch_size": 256,
+  "triplet_weight": 25.0,
+  "negative_mode": "scramble_class",
+  "scramble_patch_size": 4,
+  "margin": 0.2,
+  "mask_ratio": 0.6,
+  "embed_dim": 256,
+  "lr": 0.0003,
+  "eval_every": 10,
+  "knn_k": 20,
+  "probe_epochs": 50,
+  "seed": 42,
+  "output_dir": "./results/paper_cifar100"
+}
