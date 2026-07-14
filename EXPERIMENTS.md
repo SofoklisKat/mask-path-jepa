@@ -126,17 +126,25 @@ Replace EMA/triplet with VICReg anti-collapse terms on encoder outputs:
 ```text
 training_mode: latent_vicreg
 
-z_c = fθ(x_corrupt)     # JEPA anchor + VICReg branch
-z_x = fθ(x_clean)       # JEPA positive (stop-grad) + VICReg branch
+# Alignment head (predictor) — recommended
+ẑ = gφ(fθ(x_corrupt))                  # JEPA anchor
+z+ = stopgrad(fθ(x_clean))             # JEPA positive
+anchor_mode: predictor_corrupt
 
-L = L_JEPA + α·L_var(z_c, z_x) + β·L_cov(z_c, z_x)
+# Direct encoder path (ablation)
+ẑ = fθ(x_corrupt)
+anchor_mode: encoder_corrupt
+
+# VICReg on encoder outputs (both paths)
+L = L_JEPA + α·L_var(fθ(x_corrupt), fθ(x_clean)) + β·L_cov(...)
 ```
 
-- `L_var`: each latent dimension must have batch std ≥ 1
-- `L_cov`: off-diagonal covariance penalized (decorrelate dims)
-- Default weights from VICReg paper: `α=β=25`
+- No EMA teacher; predictor is optional alignment head (BYOL/JEPA-style asymmetry).
+- VICReg always regularizes **encoder** features (same space as eval).
 
-Config: `configs/cifar100_latent_vicreg.json`
+Configs:
+- `configs/cifar100_latent_vicreg_align.json` — predictor + VICReg (recommended)
+- `configs/cifar100_latent_vicreg.json` — encoder-only + VICReg (ablation)
 
 **Suggested ablations for paper:** λ ∈ {0.05, 0.1, 0.5}, margin m ∈ {0.1, 0.2}, with/without EMA.
 

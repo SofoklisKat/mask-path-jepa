@@ -1,8 +1,8 @@
 {
-  "run_name": "latent_vicreg_encoder",
+  "run_name": "latent_vicreg_align",
   "dataset": "cifar100",
   "training_mode": "latent_vicreg",
-  "anchor_mode": "encoder_corrupt",
+  "anchor_mode": "predictor_corrupt",
   "epochs": 100,
   "batch_size": 256,
   "triplet_weight": 0.0,
