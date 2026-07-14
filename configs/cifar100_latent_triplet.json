@@ -1,6 +1,7 @@
 {
-  "run_name": "triplet_scramble",
+  "run_name": "latent_triplet",
   "dataset": "cifar100",
+  "training_mode": "latent_triplet",
   "epochs": 100,
   "batch_size": 256,
   "triplet_weight": 0.05,
@@ -9,7 +10,6 @@
   "margin": 0.2,
   "mask_ratio": 0.6,
   "embed_dim": 256,
-  "ema_momentum": 0.996,
   "lr": 0.0003,
   "eval_every": 10,
   "knn_k": 20,

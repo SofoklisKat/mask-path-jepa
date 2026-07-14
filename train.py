@@ -21,6 +21,17 @@ def main() -> None:
     parser.add_argument("--epochs", type=int)
     parser.add_argument("--triplet-weight", type=float)
     parser.add_argument("--negative-mode", type=str, choices=["instance", "class", "scramble"])
+    parser.add_argument(
+        "--training-mode",
+        type=str,
+        choices=["jepa_ema", "latent_triplet"],
+    )
+    parser.add_argument("--use-ema-target", action=argparse.BooleanOptionalAction, default=None)
+    parser.add_argument(
+        "--anchor-mode",
+        type=str,
+        choices=["predictor_corrupt", "encoder_corrupt", "encoder_clean"],
+    )
     parser.add_argument("--output-dir", type=str, default="./results")
     parser.add_argument("--train-subset", type=int, help="Use first N train samples (debug)")
     parser.add_argument(
@@ -45,6 +56,12 @@ def main() -> None:
         cfg.triplet_weight = args.triplet_weight
     if args.negative_mode:
         cfg.negative_mode = args.negative_mode
+    if args.training_mode:
+        cfg.training_mode = args.training_mode
+    if args.use_ema_target is not None:
+        cfg.use_ema_target = args.use_ema_target
+    if args.anchor_mode:
+        cfg.anchor_mode = args.anchor_mode
     if args.output_dir:
         cfg.output_dir = args.output_dir
     if args.train_subset is not None:

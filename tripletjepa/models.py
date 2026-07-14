@@ -85,24 +85,31 @@ class Predictor(nn.Module):
 
 
 class TripletJEPA(nn.Module):
-    """Online encoder + predictor + EMA target encoder (I-JEPA style)."""
+    """Encoder (+ optional predictor) with EMA target or single-encoder stop-grad."""
 
     def __init__(
         self,
         in_channels: int = 3,
         embed_dim: int = 256,
         ema_momentum: float = 0.996,
+        use_ema_target: bool = True,
     ) -> None:
         super().__init__()
         self.encoder = SmallResNet(in_channels, embed_dim)
         self.predictor = Predictor(embed_dim)
-        self.target_encoder = copy.deepcopy(self.encoder)
-        for p in self.target_encoder.parameters():
-            p.requires_grad = False
+        self.use_ema_target = use_ema_target
         self.ema_momentum = ema_momentum
+        if use_ema_target:
+            self.target_encoder = copy.deepcopy(self.encoder)
+            for p in self.target_encoder.parameters():
+                p.requires_grad = False
+        else:
+            self.target_encoder = None
 
     @torch.no_grad()
     def update_target_encoder(self) -> None:
+        if not self.use_ema_target or self.target_encoder is None:
+            return
         m = self.ema_momentum
         for online, target in zip(
             self.encoder.parameters(), self.target_encoder.parameters()
@@ -112,14 +119,44 @@ class TripletJEPA(nn.Module):
     def encode(self, x: torch.Tensor) -> torch.Tensor:
         return self.encoder(x)
 
+    def encode_target(self, x: torch.Tensor) -> torch.Tensor:
+        """Positive/negative path: EMA encoder or same encoder (stop-grad applied outside)."""
+        if self.use_ema_target:
+            assert self.target_encoder is not None
+            return self.target_encoder(x)
+        return self.encoder(x)
+
+    def anchor_embedding(
+        self, corrupt: torch.Tensor, clean: torch.Tensor, anchor_mode: str
+    ) -> torch.Tensor:
+        if anchor_mode == "predictor_corrupt":
+            return self.predictor(self.encoder(corrupt))
+        if anchor_mode == "encoder_corrupt":
+            return self.encoder(corrupt)
+        if anchor_mode == "encoder_clean":
+            return self.encoder(clean)
+        raise ValueError(
+            f"Unknown anchor_mode={anchor_mode!r}; "
+            "expected predictor_corrupt, encoder_corrupt, or encoder_clean"
+        )
+
     def forward(
-        self, corrupt: torch.Tensor, clean: torch.Tensor
+        self,
+        corrupt: torch.Tensor,
+        clean: torch.Tensor,
+        anchor_mode: str = "predictor_corrupt",
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        z_anchor = self.predictor(self.encoder(corrupt))
-        z_positive = self.target_encoder(clean)
+        z_anchor = self.anchor_embedding(corrupt, clean, anchor_mode)
+        z_positive = self.encode_target(clean)
         return z_anchor, z_positive
 
-    def param_count(self) -> dict[str, int]:
+    def param_count(self, anchor_mode: str = "predictor_corrupt") -> dict[str, int]:
         enc = sum(p.numel() for p in self.encoder.parameters())
         pred = sum(p.numel() for p in self.predictor.parameters())
-        return {"encoder": enc, "predictor": pred, "total_trainable": enc + pred}
+        trainable = enc + (pred if anchor_mode == "predictor_corrupt" else 0)
+        return {
+            "encoder": enc,
+            "predictor": pred,
+            "total_trainable": trainable,
+            "use_ema_target": self.use_ema_target,
+        }
