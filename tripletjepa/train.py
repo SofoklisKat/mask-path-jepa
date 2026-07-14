@@ -43,7 +43,7 @@ class TrainConfig:
     # Loss
     margin: float = 0.2
     triplet_weight: float = 0.5
-    negative_mode: str = "instance"  # instance | class | scramble
+    negative_mode: str = "instance"  # instance | class | scramble | scramble_class
     mask_ratio: float = 0.6
     scramble_patch_size: int = 4
 
@@ -105,7 +105,7 @@ def train_one_epoch(
     latent_triplet mode (single encoder):
       anchor   = encoder(corrupt)           with grad
       positive = encoder(clean).detach()    stop-grad
-      negative = encoder(scramble).detach() stop-grad triplet regularizer
+      negative = encoder(scramble).detach() + different-class batch embedding
 
     jepa_ema mode (default):
       anchor   = predictor(encoder(corrupt))
@@ -128,10 +128,15 @@ def train_one_epoch(
         z_pos = z_positive.detach()  # stop-grad on positive path
 
         z_neg = None
+        z_neg_extra = None
         if cfg.triplet_weight > 0:
             if cfg.negative_mode == "scramble":
                 neg_view = scramble_patches(images, patch_size=cfg.scramble_patch_size)
                 z_neg = model.encode_target(neg_view).detach()
+            elif cfg.negative_mode == "scramble_class":
+                neg_view = scramble_patches(images, patch_size=cfg.scramble_patch_size)
+                z_neg = model.encode_target(neg_view).detach()
+                z_neg_extra = class_negatives(z_pos, labels)
             elif cfg.negative_mode == "class":
                 z_neg = class_negatives(z_pos, labels)
             elif cfg.negative_mode == "instance":
@@ -139,10 +144,10 @@ def train_one_epoch(
             else:
                 raise ValueError(
                     f"Unknown negative_mode={cfg.negative_mode!r}; "
-                    "expected instance, class, or scramble"
+                    "expected instance, class, scramble, or scramble_class"
                 )
 
-        loss, stats = criterion(z_anchor, z_pos, z_neg)
+        loss, stats = criterion(z_anchor, z_pos, z_neg, z_neg_extra)
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
         optimizer.step()
@@ -151,7 +156,8 @@ def train_one_epoch(
         bs = images.size(0)
         n += bs
         for k in totals:
-            totals[k] += stats[k] * bs
+            if k in stats:
+                totals[k] += stats[k] * bs
 
     return {k: v / max(n, 1) for k, v in totals.items()}
 

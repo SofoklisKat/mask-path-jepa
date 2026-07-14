@@ -43,7 +43,7 @@ PRESETS: dict[str, dict] = {
         "run_name": "latent_triplet",
         "training_mode": "latent_triplet",
         "triplet_weight": 0.05,
-        "negative_mode": "scramble",
+        "negative_mode": "scramble_class",
         "scramble_patch_size": 4,
     },
 }

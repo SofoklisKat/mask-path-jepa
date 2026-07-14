@@ -38,6 +38,7 @@ class TripletJEPALoss:
         z_anchor: torch.Tensor,
         z_positive: torch.Tensor,
         z_negative: torch.Tensor | None = None,
+        z_negative_extra: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, dict[str, float]]:
         l_jepa = jepa_cosine_loss(z_anchor, z_positive)
         stats: dict[str, float] = {
@@ -48,6 +49,13 @@ class TripletJEPALoss:
             if z_negative is None:
                 raise ValueError("z_negative is required when triplet_weight > 0")
             l_triplet = triplet_loss(z_anchor, z_positive, z_negative, margin=self.margin)
+            if z_negative_extra is not None:
+                l_extra = triplet_loss(
+                    z_anchor, z_positive, z_negative_extra, margin=self.margin
+                )
+                stats["triplet_scramble"] = l_triplet.item()
+                stats["triplet_class"] = l_extra.item()
+                l_triplet = 0.5 * (l_triplet + l_extra)
             total = l_jepa + self.triplet_weight * l_triplet
             stats["triplet"] = l_triplet.item()
         else:
