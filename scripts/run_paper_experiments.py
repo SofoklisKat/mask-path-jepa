@@ -201,6 +201,16 @@ PRESETS: dict[str, dict] = {
         "blur_sigma_min": 0.5,
         "blur_sigma_max": 3.0,
     },
+    # --- Single encoder + cosine uniformity (hypersphere, Wang & Isola) ---
+    "latent_uniformity_align": {
+        "run_name": "latent_uniformity_align",
+        "training_mode": "latent_uniformity",
+        "anchor_mode": "predictor_corrupt",
+        "triplet_weight": 0.0,
+        "uniformity_weight": 0.5,
+        "uniformity_t": 2.0,
+        "corrupt_schedule": "block",
+    },
 }
 
 SUITES: dict[str, list[str]] = {
@@ -238,6 +248,9 @@ SUITES: dict[str, list[str]] = {
         "latent_sigreg_encoder",
         "latent_sigreg_align",
         "latent_sigreg_align_curriculum",
+    ],
+    "latent_uniformity": [
+        "latent_uniformity_align",
     ],
     "full": [
         "jepa_baseline",

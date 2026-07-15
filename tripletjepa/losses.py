@@ -49,6 +49,14 @@ def vicreg_covariance(z: torch.Tensor) -> torch.Tensor:
     return off_diag.pow(2).sum() / z.size(1)
 
 
+def uniformity_loss(z: torch.Tensor, t: float = 2.0) -> torch.Tensor:
+    """Hypersphere uniformity (Wang & Isola): spread unit-normalized embeddings."""
+    z = F.normalize(z, dim=-1)
+    sq_dist = torch.cdist(z, z, p=2).pow(2)
+    mask = ~torch.eye(z.size(0), dtype=torch.bool, device=z.device)
+    return torch.log(torch.exp(-t * sq_dist[mask]).mean() + 1e-8)
+
+
 def sigreg_loss(
     x: torch.Tensor,
     global_step: int,
@@ -87,6 +95,8 @@ class TripletJEPALoss:
     vicreg_cov_weight: float = 0.0
     sigreg_weight: float = 0.0
     sigreg_num_slices: int = 256
+    uniformity_weight: float = 0.0
+    uniformity_t: float = 2.0
 
     def __call__(
         self,
@@ -99,6 +109,7 @@ class TripletJEPALoss:
         z_inv_a: torch.Tensor | None = None,
         z_inv_b: torch.Tensor | None = None,
         z_sigreg: torch.Tensor | None = None,
+        z_uniformity: torch.Tensor | None = None,
         global_step: int = 0,
     ) -> tuple[torch.Tensor, dict[str, float]]:
         l_jepa = jepa_cosine_loss(z_anchor, z_positive)
@@ -109,6 +120,7 @@ class TripletJEPALoss:
             or self.vicreg_cov_weight > 0
         )
         use_sigreg = self.sigreg_weight > 0
+        use_uniformity = self.uniformity_weight > 0
 
         if use_sigreg:
             if z_inv_a is None or z_inv_b is None or z_sigreg is None:
@@ -119,6 +131,16 @@ class TripletJEPALoss:
             total = (1.0 - lam) * l_inv + lam * l_sig
             stats["sigreg_inv"] = l_inv.item()
             stats["sigreg"] = l_sig.item()
+        elif use_uniformity:
+            if z_inv_a is None or z_inv_b is None or z_uniformity is None:
+                raise ValueError(
+                    "z_inv_a, z_inv_b, and z_uniformity are required for uniformity"
+                )
+            l_align = jepa_cosine_loss(z_inv_a, z_inv_b)
+            l_unif = uniformity_loss(z_uniformity, self.uniformity_t)
+            total = l_align + self.uniformity_weight * l_unif
+            stats["align"] = l_align.item()
+            stats["uniformity"] = l_unif.item()
         elif use_vicreg:
             if z_vicreg_a is None or z_vicreg_b is None:
                 raise ValueError("z_vicreg_a and z_vicreg_b are required for VICReg")
