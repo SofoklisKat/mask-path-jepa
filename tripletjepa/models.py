@@ -4,6 +4,7 @@ import copy
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 
 class SmallResNet(nn.Module):
@@ -84,6 +85,18 @@ class Predictor(nn.Module):
         return self.net(z)
 
 
+class PrototypeBank(nn.Module):
+    """Learnable unit-sphere prototypes for SwAV-style unsupervised clustering."""
+
+    def __init__(self, embed_dim: int, num_prototypes: int) -> None:
+        super().__init__()
+        self.prototypes = nn.Parameter(torch.empty(num_prototypes, embed_dim))
+        nn.init.normal_(self.prototypes, std=0.02)
+
+    def forward(self) -> torch.Tensor:
+        return F.normalize(self.prototypes, dim=-1, eps=1e-6)
+
+
 class TripletJEPA(nn.Module):
     """Encoder (+ optional predictor) with EMA target or single-encoder stop-grad."""
 
@@ -93,12 +106,16 @@ class TripletJEPA(nn.Module):
         embed_dim: int = 256,
         ema_momentum: float = 0.996,
         use_ema_target: bool = True,
+        num_prototypes: int = 0,
     ) -> None:
         super().__init__()
         self.encoder = SmallResNet(in_channels, embed_dim)
         self.predictor = Predictor(embed_dim)
         self.use_ema_target = use_ema_target
         self.ema_momentum = ema_momentum
+        self.prototype_bank = (
+            PrototypeBank(embed_dim, num_prototypes) if num_prototypes > 0 else None
+        )
         if use_ema_target:
             self.target_encoder = copy.deepcopy(self.encoder)
             for p in self.target_encoder.parameters():
@@ -153,10 +170,16 @@ class TripletJEPA(nn.Module):
     def param_count(self, anchor_mode: str = "predictor_corrupt") -> dict[str, int]:
         enc = sum(p.numel() for p in self.encoder.parameters())
         pred = sum(p.numel() for p in self.predictor.parameters())
-        trainable = enc + (pred if anchor_mode == "predictor_corrupt" else 0)
+        proto = (
+            sum(p.numel() for p in self.prototype_bank.parameters())
+            if self.prototype_bank is not None
+            else 0
+        )
+        trainable = enc + (pred if anchor_mode == "predictor_corrupt" else 0) + proto
         return {
             "encoder": enc,
             "predictor": pred,
+            "prototypes": proto,
             "total_trainable": trainable,
             "use_ema_target": self.use_ema_target,
         }

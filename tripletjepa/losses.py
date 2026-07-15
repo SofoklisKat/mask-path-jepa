@@ -57,6 +57,53 @@ def uniformity_loss(z: torch.Tensor, t: float = 2.0) -> torch.Tensor:
     return torch.log(torch.exp(-t * sq_dist[mask]).mean() + 1e-8)
 
 
+@torch.no_grad()
+def sinkhorn_knopp(
+    scores: torch.Tensor,
+    n_iters: int = 3,
+    epsilon: float = 0.05,
+) -> torch.Tensor:
+    """Soft equipartition assignment (SwAV). scores: (B, K) -> Q: (B, K)."""
+    q = torch.exp(scores / epsilon).t()  # (K, B)
+    b = q.size(1)
+    k = q.size(0)
+    q /= torch.sum(q) + 1e-12
+    for _ in range(n_iters):
+        q /= torch.sum(q, dim=1, keepdim=True) + 1e-12
+        q /= k
+        q /= torch.sum(q, dim=0, keepdim=True) + 1e-12
+        q /= b
+    q *= b  # columns sum to 1
+    return q.t()
+
+
+def swav_loss(
+    z_a: torch.Tensor,
+    z_b: torch.Tensor,
+    prototypes: torch.Tensor,
+    temperature: float = 0.1,
+    sinkhorn_iters: int = 3,
+    sinkhorn_eps: float = 0.05,
+) -> torch.Tensor:
+    """SwAV swapped prediction between two unit-sphere views and prototypes (K, D)."""
+    z_a = F.normalize(z_a, dim=-1)
+    z_b = F.normalize(z_b, dim=-1)
+    proto = F.normalize(prototypes, dim=-1)
+
+    logits_a = z_a @ proto.t()
+    logits_b = z_b @ proto.t()
+
+    with torch.no_grad():
+        q_a = sinkhorn_knopp(logits_a, n_iters=sinkhorn_iters, epsilon=sinkhorn_eps)
+        q_b = sinkhorn_knopp(logits_b, n_iters=sinkhorn_iters, epsilon=sinkhorn_eps)
+
+    p_a = F.log_softmax(logits_a / temperature, dim=-1)
+    p_b = F.log_softmax(logits_b / temperature, dim=-1)
+    loss_ab = -(q_b * p_a).sum(dim=-1).mean()
+    loss_ba = -(q_a * p_b).sum(dim=-1).mean()
+    return 0.5 * (loss_ab + loss_ba)
+
+
 def sigreg_loss(
     x: torch.Tensor,
     global_step: int,
@@ -97,6 +144,11 @@ class TripletJEPALoss:
     sigreg_num_slices: int = 256
     uniformity_weight: float = 0.0
     uniformity_t: float = 2.0
+    proto_weight: float = 0.0
+    proto_num: int = 100
+    proto_temperature: float = 0.1
+    sinkhorn_iters: int = 3
+    sinkhorn_eps: float = 0.05
 
     def __call__(
         self,
@@ -110,6 +162,9 @@ class TripletJEPALoss:
         z_inv_b: torch.Tensor | None = None,
         z_sigreg: torch.Tensor | None = None,
         z_uniformity: torch.Tensor | None = None,
+        prototypes: torch.Tensor | None = None,
+        z_proto_a: torch.Tensor | None = None,
+        z_proto_b: torch.Tensor | None = None,
         global_step: int = 0,
     ) -> tuple[torch.Tensor, dict[str, float]]:
         l_jepa = jepa_cosine_loss(z_anchor, z_positive)
@@ -121,6 +176,7 @@ class TripletJEPALoss:
         )
         use_sigreg = self.sigreg_weight > 0
         use_uniformity = self.uniformity_weight > 0
+        use_proto = self.proto_weight > 0
 
         if use_sigreg:
             if z_inv_a is None or z_inv_b is None or z_sigreg is None:
@@ -131,16 +187,33 @@ class TripletJEPALoss:
             total = (1.0 - lam) * l_inv + lam * l_sig
             stats["sigreg_inv"] = l_inv.item()
             stats["sigreg"] = l_sig.item()
-        elif use_uniformity:
-            if z_inv_a is None or z_inv_b is None or z_uniformity is None:
-                raise ValueError(
-                    "z_inv_a, z_inv_b, and z_uniformity are required for uniformity"
-                )
+        elif use_uniformity or use_proto:
+            if z_inv_a is None or z_inv_b is None:
+                raise ValueError("z_inv_a and z_inv_b are required for sphere alignment")
             l_align = jepa_cosine_loss(z_inv_a, z_inv_b)
-            l_unif = uniformity_loss(z_uniformity, self.uniformity_t)
-            total = l_align + self.uniformity_weight * l_unif
+            total = l_align
             stats["align"] = l_align.item()
-            stats["uniformity"] = l_unif.item()
+            if use_uniformity:
+                if z_uniformity is None:
+                    raise ValueError("z_uniformity is required when uniformity_weight > 0")
+                l_unif = uniformity_loss(z_uniformity, self.uniformity_t)
+                total = total + self.uniformity_weight * l_unif
+                stats["uniformity"] = l_unif.item()
+            if use_proto:
+                if prototypes is None or z_proto_a is None or z_proto_b is None:
+                    raise ValueError(
+                        "prototypes, z_proto_a, and z_proto_b are required when proto_weight > 0"
+                    )
+                l_swav = swav_loss(
+                    z_proto_a,
+                    z_proto_b,
+                    prototypes,
+                    temperature=self.proto_temperature,
+                    sinkhorn_iters=self.sinkhorn_iters,
+                    sinkhorn_eps=self.sinkhorn_eps,
+                )
+                total = total + self.proto_weight * l_swav
+                stats["swav"] = l_swav.item()
         elif use_vicreg:
             if z_vicreg_a is None or z_vicreg_b is None:
                 raise ValueError("z_vicreg_a and z_vicreg_b are required for VICReg")

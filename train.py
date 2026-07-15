@@ -43,6 +43,11 @@ def main() -> None:
         action="store_true",
         help="Download datasets if missing (use on server; off by default)",
     )
+    parser.add_argument(
+        "--resume",
+        type=str,
+        help="Path to checkpoint_last.pt (or other .pt) to resume training",
+    )
     args = parser.parse_args()
 
     if args.config:
@@ -72,6 +77,8 @@ def main() -> None:
         cfg.train_subset = args.train_subset
     if args.download:
         cfg.download = True
+    if args.resume:
+        cfg.resume = args.resume
 
     summary = run_training(cfg)
     print(json.dumps(summary["final"], indent=2))

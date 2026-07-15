@@ -211,6 +211,20 @@ PRESETS: dict[str, dict] = {
         "uniformity_t": 2.0,
         "corrupt_schedule": "block",
     },
+    "latent_uniformity_swav": {
+        "run_name": "latent_uniformity_swav",
+        "training_mode": "latent_uniformity",
+        "anchor_mode": "predictor_corrupt",
+        "triplet_weight": 0.0,
+        "uniformity_weight": 0.5,
+        "uniformity_t": 2.0,
+        "proto_weight": 0.5,
+        "proto_num": 100,
+        "proto_temperature": 0.1,
+        "sinkhorn_iters": 3,
+        "sinkhorn_eps": 0.05,
+        "corrupt_schedule": "block",
+    },
 }
 
 SUITES: dict[str, list[str]] = {
@@ -251,6 +265,7 @@ SUITES: dict[str, list[str]] = {
     ],
     "latent_uniformity": [
         "latent_uniformity_align",
+        "latent_uniformity_swav",
     ],
     "full": [
         "jepa_baseline",

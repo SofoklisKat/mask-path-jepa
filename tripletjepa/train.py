@@ -65,6 +65,11 @@ class TrainConfig:
     sigreg_num_slices: int = 256
     uniformity_weight: float = 0.0
     uniformity_t: float = 2.0
+    proto_weight: float = 0.0
+    proto_num: int = 100
+    proto_temperature: float = 0.1
+    sinkhorn_iters: int = 3
+    sinkhorn_eps: float = 0.05
 
     # Optim
     epochs: int = 100
@@ -81,6 +86,7 @@ class TrainConfig:
     device: str = "auto"
     output_dir: str = "./results/run"
     run_name: str = "triplet_jepa"
+    resume: str | None = None
     extra: dict = field(default_factory=dict)
 
     @classmethod
@@ -152,7 +158,7 @@ def train_one_epoch(
 
     latent_uniformity mode (single encoder):
       Cosine(predictor(corrupt), encoder(clean)) + w·Uniformity(encoder embeddings).
-      Uniformity on unit-normalized concat(encoder(corrupt), encoder(clean)).
+      Optional SwAV: unsupervised prototypes (no labels) swapped prediction on sphere.
 
     jepa_ema mode (default):
       anchor   = predictor(encoder(corrupt))
@@ -169,6 +175,8 @@ def train_one_epoch(
     )
     use_sigreg = cfg.sigreg_weight > 0
     use_uniformity = cfg.uniformity_weight > 0
+    use_proto = cfg.proto_weight > 0
+    use_sphere = use_uniformity or use_proto
     if use_vicreg:
         totals["vicreg_inv"] = 0.0
         totals["vicreg_var"] = 0.0
@@ -179,6 +187,10 @@ def train_one_epoch(
     if use_uniformity:
         totals["align"] = 0.0
         totals["uniformity"] = 0.0
+    elif use_proto:
+        totals["align"] = 0.0
+    if use_proto:
+        totals["swav"] = 0.0
     n = 0
     progress = corrupt_progress(epoch, cfg.epochs)
 
@@ -209,6 +221,9 @@ def train_one_epoch(
         z_inv_b = None
         z_sigreg = None
         z_uniformity = None
+        prototypes = None
+        z_proto_a = None
+        z_proto_b = None
         global_step = (epoch - 1) * steps_per_epoch + batch_idx
         if cfg.triplet_weight > 0:
             if cfg.negative_mode == "scramble":
@@ -228,10 +243,10 @@ def train_one_epoch(
                     "expected instance, class, scramble, or scramble_class"
                 )
 
-        if use_vicreg or use_sigreg or use_uniformity:
+        if use_vicreg or use_sigreg or use_sphere:
             z_vicreg_a = model.encoder(corrupt)
             z_vicreg_b = model.encoder(images)
-            if cfg.vicreg_inv_weight > 0 or use_sigreg or use_uniformity:
+            if cfg.vicreg_inv_weight > 0 or use_sigreg or use_sphere:
                 if cfg.anchor_mode == "predictor_corrupt":
                     z_inv_a = model.predictor(z_vicreg_a)
                     z_inv_b = z_vicreg_b.detach()
@@ -241,6 +256,13 @@ def train_one_epoch(
                 z_sigreg = torch.cat([z_vicreg_a, z_vicreg_b], dim=0)
             if use_uniformity:
                 z_uniformity = torch.cat([z_vicreg_a, z_vicreg_b], dim=0)
+            if use_proto:
+                if model.prototype_bank is None:
+                    raise ValueError("proto_weight > 0 requires model.prototype_bank")
+                prototypes = model.prototype_bank()
+                # SwAV views: predicted corrupt path vs clean encoder (grad on both).
+                z_proto_a = z_inv_a if cfg.anchor_mode == "predictor_corrupt" else z_vicreg_a
+                z_proto_b = z_vicreg_b
 
         loss, stats = criterion(
             z_anchor,
@@ -253,6 +275,9 @@ def train_one_epoch(
             z_inv_b,
             z_sigreg,
             z_uniformity,
+            prototypes,
+            z_proto_a,
+            z_proto_b,
             global_step,
         )
         optimizer.zero_grad(set_to_none=True)
@@ -275,13 +300,115 @@ def resolve_device(device_str: str) -> torch.device:
     return torch.device(device_str)
 
 
+def checkpoint_last_path(out: Path) -> Path:
+    return out / "checkpoint_last.pt"
+
+
+def checkpoint_best_path(out: Path) -> Path:
+    return out / "checkpoint_best.pt"
+
+
+def best_knn_from_history(history: list[dict]) -> tuple[float, int]:
+    best_knn = -1.0
+    best_epoch = 0
+    for row in history:
+        knn = row.get("knn")
+        if knn is None:
+            continue
+        if knn > best_knn:
+            best_knn = float(knn)
+            best_epoch = int(row["epoch"])
+    return best_knn, best_epoch
+
+
+def _checkpoint_config_keys() -> tuple[str, ...]:
+    return (
+        "training_mode",
+        "embed_dim",
+        "anchor_mode",
+        "use_ema_target",
+        "proto_num",
+        "proto_weight",
+        "epochs",
+        "run_name",
+        "dataset",
+    )
+
+
+def validate_resume_config(cfg: TrainConfig, saved_cfg: dict) -> None:
+    mismatches = []
+    for key in _checkpoint_config_keys():
+        if saved_cfg.get(key) != getattr(cfg, key):
+            mismatches.append(f"{key}: checkpoint={saved_cfg.get(key)!r} config={getattr(cfg, key)!r}")
+    if mismatches:
+        raise ValueError(
+            "Resume config mismatch (use the same config as the original run):\n"
+            + "\n".join(f"  - {m}" for m in mismatches)
+        )
+
+
+def save_training_checkpoint(
+    path: Path,
+    *,
+    epoch: int,
+    cfg: TrainConfig,
+    model: TripletJEPA,
+    optimizer: optim.Optimizer,
+    scheduler: optim.lr_scheduler.LRScheduler,
+    history: list[dict],
+    elapsed_sec: float,
+) -> None:
+    torch.save(
+        {
+            "epoch": epoch,
+            "config": asdict(cfg),
+            "model": model.state_dict(),
+            "optimizer": optimizer.state_dict(),
+            "scheduler": scheduler.state_dict(),
+            "history": history,
+            "elapsed_sec": elapsed_sec,
+        },
+        path,
+    )
+
+
+def load_training_checkpoint(
+    path: str | Path,
+    device: torch.device,
+) -> dict:
+    ckpt_path = Path(path)
+    if not ckpt_path.is_file():
+        raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
+    return torch.load(ckpt_path, map_location=device, weights_only=False)
+
+
 def run_training(cfg: TrainConfig) -> dict:
     cfg = resolve_training_mode(cfg)
-    set_seed(cfg.seed)
     device = resolve_device(cfg.device)
 
     out = Path(cfg.output_dir) / cfg.run_name
     out.mkdir(parents=True, exist_ok=True)
+
+    resume_path = Path(cfg.resume) if cfg.resume else None
+    ckpt: dict | None = None
+    start_epoch = 1
+    history: list[dict] = []
+    elapsed_before = 0.0
+
+    if resume_path is not None:
+        ckpt = load_training_checkpoint(resume_path, device)
+        validate_resume_config(cfg, ckpt["config"])
+        start_epoch = int(ckpt["epoch"]) + 1
+        history = list(ckpt.get("history", []))
+        elapsed_before = float(ckpt.get("elapsed_sec", 0.0))
+        if start_epoch > cfg.epochs:
+            raise ValueError(
+                f"Checkpoint epoch {ckpt['epoch']} >= target epochs {cfg.epochs}; nothing to resume"
+            )
+        print(f"Resuming from {resume_path} at epoch {start_epoch}/{cfg.epochs}")
+    else:
+        set_seed(cfg.seed)
+
     cfg.to_json(out / "config.json")
 
     print(
@@ -295,7 +422,9 @@ def run_training(cfg: TrainConfig) -> dict:
         f"sigreg_weight={cfg.sigreg_weight} | "
         f"sigreg_num_slices={cfg.sigreg_num_slices} | "
         f"uniformity_weight={cfg.uniformity_weight} | "
-        f"uniformity_t={cfg.uniformity_t}"
+        f"uniformity_t={cfg.uniformity_t} | "
+        f"proto_weight={cfg.proto_weight} | "
+        f"proto_num={cfg.proto_num}"
     )
 
     train_loader, test_loader, spec = get_dataloaders(
@@ -312,12 +441,15 @@ def run_training(cfg: TrainConfig) -> dict:
         embed_dim=cfg.embed_dim,
         ema_momentum=cfg.ema_momentum,
         use_ema_target=cfg.use_ema_target,
+        num_prototypes=cfg.proto_num if cfg.proto_weight > 0 else 0,
     ).to(device)
     params = model.param_count(cfg.anchor_mode)
 
     train_params = list(model.encoder.parameters())
     if cfg.anchor_mode == "predictor_corrupt":
         train_params += list(model.predictor.parameters())
+    if model.prototype_bank is not None:
+        train_params += list(model.prototype_bank.parameters())
     optimizer = optim.AdamW(
         train_params,
         lr=cfg.lr,
@@ -334,9 +466,20 @@ def run_training(cfg: TrainConfig) -> dict:
         sigreg_num_slices=cfg.sigreg_num_slices,
         uniformity_weight=cfg.uniformity_weight,
         uniformity_t=cfg.uniformity_t,
+        proto_weight=cfg.proto_weight,
+        proto_num=cfg.proto_num,
+        proto_temperature=cfg.proto_temperature,
+        sinkhorn_iters=cfg.sinkhorn_iters,
+        sinkhorn_eps=cfg.sinkhorn_eps,
     )
 
-    history: list[dict] = []
+    if ckpt is not None:
+        model.load_state_dict(ckpt["model"])
+        optimizer.load_state_dict(ckpt["optimizer"])
+        scheduler.load_state_dict(ckpt["scheduler"])
+
+    best_knn, best_epoch = best_knn_from_history(history)
+
     t0 = time.time()
     use_vicreg = (
         cfg.vicreg_inv_weight > 0
@@ -345,9 +488,10 @@ def run_training(cfg: TrainConfig) -> dict:
     )
     use_sigreg = cfg.sigreg_weight > 0
     use_uniformity = cfg.uniformity_weight > 0
+    use_proto = cfg.proto_weight > 0
     steps_per_epoch = len(train_loader)
 
-    for epoch in range(1, cfg.epochs + 1):
+    for epoch in range(start_epoch, cfg.epochs + 1):
         train_stats, progress = train_one_epoch(
             model,
             train_loader,
@@ -388,11 +532,13 @@ def run_training(cfg: TrainConfig) -> dict:
         if cfg.triplet_weight > 0:
             parts.append(f"jepa {row['jepa']:.4f}")
             parts.append(f"triplet {row['triplet']:.4f}")
-        elif use_uniformity:
+        elif use_uniformity or use_proto:
             if "align" in row:
                 parts.append(f"align {row['align']:.4f}")
             if "uniformity" in row:
                 parts.append(f"unif {row['uniformity']:.4f}")
+            if "swav" in row:
+                parts.append(f"swav {row['swav']:.4f}")
             parts.append(f"jepa(log) {row['jepa']:.4f}")
         elif use_sigreg:
             if "sigreg_inv" in row:
@@ -420,9 +566,34 @@ def run_training(cfg: TrainConfig) -> dict:
             tag += f" | k-NN {row['knn']:.3f} | linear {row['linear_probe']:.3f}"
         print(tag)
 
-    elapsed = time.time() - t0
-    # Save encoder weights for downstream eval / deployment (inference artifact).
-    torch.save(model.encoder.state_dict(), out / "encoder.pt")
+        elapsed_now = elapsed_before + (time.time() - t0)
+        save_training_checkpoint(
+            checkpoint_last_path(out),
+            epoch=epoch,
+            cfg=cfg,
+            model=model,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            history=history,
+            elapsed_sec=elapsed_now,
+        )
+
+        if "knn" in row and row["knn"] > best_knn:
+            best_knn = float(row["knn"])
+            best_epoch = epoch
+            save_training_checkpoint(
+                checkpoint_best_path(out),
+                epoch=epoch,
+                cfg=cfg,
+                model=model,
+                optimizer=optimizer,
+                scheduler=scheduler,
+                history=history,
+                elapsed_sec=elapsed_now,
+            )
+            print(f"  -> new best k-NN {best_knn:.3f} @ epoch {best_epoch} (saved checkpoint_best.pt)")
+
+    elapsed = elapsed_before + (time.time() - t0)
 
     summary = {
         "run_name": cfg.run_name,
@@ -444,11 +615,16 @@ def run_training(cfg: TrainConfig) -> dict:
         "sigreg_num_slices": cfg.sigreg_num_slices,
         "uniformity_weight": cfg.uniformity_weight,
         "uniformity_t": cfg.uniformity_t,
+        "proto_weight": cfg.proto_weight,
+        "proto_num": cfg.proto_num,
+        "proto_temperature": cfg.proto_temperature,
         "margin": cfg.margin,
         "epochs": cfg.epochs,
         "params": params,
         "elapsed_sec": round(elapsed, 1),
         "device": str(device),
+        "best_knn": best_knn if best_epoch > 0 else None,
+        "best_epoch": best_epoch if best_epoch > 0 else None,
         "final": history[-1],
         "history": history,
     }
