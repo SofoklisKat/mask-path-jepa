@@ -43,7 +43,7 @@ class TrainConfig:
     # Model
     embed_dim: int = 256
     ema_momentum: float = 0.996
-    training_mode: str = "jepa_ema"  # jepa_ema | latent_triplet | latent_vicreg | latent_sigreg
+    training_mode: str = "jepa_ema"  # jepa_ema | latent_triplet | latent_vicreg | latent_sigreg | latent_uniformity
     use_ema_target: bool = True
     anchor_mode: str = "predictor_corrupt"  # predictor_corrupt | encoder_corrupt | encoder_clean
 
@@ -63,6 +63,8 @@ class TrainConfig:
     vicreg_cov_weight: float = 0.0
     sigreg_weight: float = 0.0
     sigreg_num_slices: int = 256
+    uniformity_weight: float = 0.0
+    uniformity_t: float = 2.0
 
     # Optim
     epochs: int = 100
@@ -110,9 +112,13 @@ def resolve_training_mode(cfg: TrainConfig) -> TrainConfig:
         # One encoder, LeJEPA-style MSE invariance + SIGReg anti-collapse (no EMA teacher).
         cfg.use_ema_target = False
         return cfg
+    if cfg.training_mode == "latent_uniformity":
+        # One encoder, cosine JEPA alignment + hypersphere uniformity (Wang & Isola).
+        cfg.use_ema_target = False
+        return cfg
     raise ValueError(
         f"Unknown training_mode={cfg.training_mode!r}; "
-        "expected jepa_ema, latent_triplet, latent_vicreg, or latent_sigreg"
+        "expected jepa_ema, latent_triplet, latent_vicreg, latent_sigreg, or latent_uniformity"
     )
 
 
@@ -144,6 +150,10 @@ def train_one_epoch(
       Align mode: MSE(predictor(corrupt), encoder(clean)).
       SIGReg on concat(encoder(corrupt), encoder(clean)).
 
+    latent_uniformity mode (single encoder):
+      Cosine(predictor(corrupt), encoder(clean)) + w·Uniformity(encoder embeddings).
+      Uniformity on unit-normalized concat(encoder(corrupt), encoder(clean)).
+
     jepa_ema mode (default):
       anchor   = predictor(encoder(corrupt))
       positive = target_encoder(clean).detach()
@@ -158,6 +168,7 @@ def train_one_epoch(
         or cfg.vicreg_cov_weight > 0
     )
     use_sigreg = cfg.sigreg_weight > 0
+    use_uniformity = cfg.uniformity_weight > 0
     if use_vicreg:
         totals["vicreg_inv"] = 0.0
         totals["vicreg_var"] = 0.0
@@ -165,6 +176,9 @@ def train_one_epoch(
     if use_sigreg:
         totals["sigreg_inv"] = 0.0
         totals["sigreg"] = 0.0
+    if use_uniformity:
+        totals["align"] = 0.0
+        totals["uniformity"] = 0.0
     n = 0
     progress = corrupt_progress(epoch, cfg.epochs)
 
@@ -194,6 +208,7 @@ def train_one_epoch(
         z_inv_a = None
         z_inv_b = None
         z_sigreg = None
+        z_uniformity = None
         global_step = (epoch - 1) * steps_per_epoch + batch_idx
         if cfg.triplet_weight > 0:
             if cfg.negative_mode == "scramble":
@@ -213,10 +228,10 @@ def train_one_epoch(
                     "expected instance, class, scramble, or scramble_class"
                 )
 
-        if use_vicreg or use_sigreg:
+        if use_vicreg or use_sigreg or use_uniformity:
             z_vicreg_a = model.encoder(corrupt)
             z_vicreg_b = model.encoder(images)
-            if cfg.vicreg_inv_weight > 0 or use_sigreg:
+            if cfg.vicreg_inv_weight > 0 or use_sigreg or use_uniformity:
                 if cfg.anchor_mode == "predictor_corrupt":
                     z_inv_a = model.predictor(z_vicreg_a)
                     z_inv_b = z_vicreg_b.detach()
@@ -224,6 +239,8 @@ def train_one_epoch(
                     z_inv_a, z_inv_b = z_vicreg_a, z_vicreg_b
             if use_sigreg:
                 z_sigreg = torch.cat([z_vicreg_a, z_vicreg_b], dim=0)
+            if use_uniformity:
+                z_uniformity = torch.cat([z_vicreg_a, z_vicreg_b], dim=0)
 
         loss, stats = criterion(
             z_anchor,
@@ -235,6 +252,7 @@ def train_one_epoch(
             z_inv_a,
             z_inv_b,
             z_sigreg,
+            z_uniformity,
             global_step,
         )
         optimizer.zero_grad(set_to_none=True)
@@ -275,7 +293,9 @@ def run_training(cfg: TrainConfig) -> dict:
         f"vicreg_var_weight={cfg.vicreg_var_weight} | "
         f"vicreg_cov_weight={cfg.vicreg_cov_weight} | "
         f"sigreg_weight={cfg.sigreg_weight} | "
-        f"sigreg_num_slices={cfg.sigreg_num_slices}"
+        f"sigreg_num_slices={cfg.sigreg_num_slices} | "
+        f"uniformity_weight={cfg.uniformity_weight} | "
+        f"uniformity_t={cfg.uniformity_t}"
     )
 
     train_loader, test_loader, spec = get_dataloaders(
@@ -312,6 +332,8 @@ def run_training(cfg: TrainConfig) -> dict:
         vicreg_cov_weight=cfg.vicreg_cov_weight,
         sigreg_weight=cfg.sigreg_weight,
         sigreg_num_slices=cfg.sigreg_num_slices,
+        uniformity_weight=cfg.uniformity_weight,
+        uniformity_t=cfg.uniformity_t,
     )
 
     history: list[dict] = []
@@ -322,6 +344,7 @@ def run_training(cfg: TrainConfig) -> dict:
         or cfg.vicreg_cov_weight > 0
     )
     use_sigreg = cfg.sigreg_weight > 0
+    use_uniformity = cfg.uniformity_weight > 0
     steps_per_epoch = len(train_loader)
 
     for epoch in range(1, cfg.epochs + 1):
@@ -365,6 +388,12 @@ def run_training(cfg: TrainConfig) -> dict:
         if cfg.triplet_weight > 0:
             parts.append(f"jepa {row['jepa']:.4f}")
             parts.append(f"triplet {row['triplet']:.4f}")
+        elif use_uniformity:
+            if "align" in row:
+                parts.append(f"align {row['align']:.4f}")
+            if "uniformity" in row:
+                parts.append(f"unif {row['uniformity']:.4f}")
+            parts.append(f"jepa(log) {row['jepa']:.4f}")
         elif use_sigreg:
             if "sigreg_inv" in row:
                 parts.append(f"inv {row['sigreg_inv']:.4f}")
@@ -413,6 +442,8 @@ def run_training(cfg: TrainConfig) -> dict:
         "vicreg_cov_weight": cfg.vicreg_cov_weight,
         "sigreg_weight": cfg.sigreg_weight,
         "sigreg_num_slices": cfg.sigreg_num_slices,
+        "uniformity_weight": cfg.uniformity_weight,
+        "uniformity_t": cfg.uniformity_t,
         "margin": cfg.margin,
         "epochs": cfg.epochs,
         "params": params,
