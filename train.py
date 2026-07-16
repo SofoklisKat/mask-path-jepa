@@ -20,6 +20,18 @@ def main() -> None:
     parser.add_argument("--dataset", type=str, choices=dataset_choices())
     parser.add_argument("--epochs", type=int)
     parser.add_argument("--triplet-weight", type=float)
+    parser.add_argument("--align-weight", type=float, help="JEPA align weight (0 = disable)")
+    parser.add_argument("--aug-align-weight", type=float, help="Encoder aug vs clean cosine weight")
+    parser.add_argument(
+        "--backbone",
+        type=str,
+        choices=["resnet", "vit"],
+        help="Encoder backbone: resnet (CNN) or vit (small ViT)",
+    )
+    parser.add_argument("--vit-depth", type=int)
+    parser.add_argument("--vit-heads", type=int)
+    parser.add_argument("--vit-patch-size", type=int)
+    parser.add_argument("--vit-mlp-dim", type=int)
     parser.add_argument(
         "--negative-mode",
         type=str,
@@ -28,7 +40,7 @@ def main() -> None:
     parser.add_argument(
         "--training-mode",
         type=str,
-        choices=["jepa_ema", "latent_triplet", "latent_vicreg", "latent_sigreg", "latent_uniformity", "latent_triplet_uniformity"],
+        choices=["jepa_ema", "latent_triplet", "latent_vicreg", "latent_sigreg", "latent_uniformity", "latent_triplet_uniformity", "latent_jepa_augment_uniformity"],
     )
     parser.add_argument("--use-ema-target", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument(
@@ -63,6 +75,20 @@ def main() -> None:
         cfg.epochs = args.epochs
     if args.triplet_weight is not None:
         cfg.triplet_weight = args.triplet_weight
+    if args.align_weight is not None:
+        cfg.align_weight = args.align_weight
+    if args.aug_align_weight is not None:
+        cfg.aug_align_weight = args.aug_align_weight
+    if args.backbone:
+        cfg.backbone = args.backbone
+    if args.vit_depth is not None:
+        cfg.vit_depth = args.vit_depth
+    if args.vit_heads is not None:
+        cfg.vit_heads = args.vit_heads
+    if args.vit_patch_size is not None:
+        cfg.vit_patch_size = args.vit_patch_size
+    if args.vit_mlp_dim is not None:
+        cfg.vit_mlp_dim = args.vit_mlp_dim
     if args.negative_mode:
         cfg.negative_mode = args.negative_mode
     if args.training_mode:
