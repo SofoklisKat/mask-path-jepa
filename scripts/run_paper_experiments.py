@@ -225,6 +225,17 @@ PRESETS: dict[str, dict] = {
         "sinkhorn_eps": 0.05,
         "corrupt_schedule": "block",
     },
+    "latent_triplet_uniformity_align": {
+        "run_name": "latent_triplet_uniformity_align",
+        "training_mode": "latent_triplet_uniformity",
+        "anchor_mode": "predictor_corrupt",
+        "triplet_weight": 0.5,
+        "uniformity_weight": 0.5,
+        "uniformity_t": 2.0,
+        "negative_mode": "scramble",
+        "scramble_patch_size": 4,
+        "corrupt_schedule": "block",
+    },
 }
 
 SUITES: dict[str, list[str]] = {
@@ -266,6 +277,7 @@ SUITES: dict[str, list[str]] = {
     "latent_uniformity": [
         "latent_uniformity_align",
         "latent_uniformity_swav",
+        "latent_triplet_uniformity_align",
     ],
     "full": [
         "jepa_baseline",

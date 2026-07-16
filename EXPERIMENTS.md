@@ -227,9 +227,11 @@ Aggregate table: `results/paper_cifar100/TABLE.md`
 
 ---
 
-## 7. CIFAR-100 results (completed)
+## 7. CIFAR-100 results
 
-See **`RESULTS_CIFAR100.md`** for the full table. Summary:
+**Living log:** see **`experiments.md`** (updated after each run). Legacy snapshot: `RESULTS_CIFAR100.md`.
+
+Summary (Phase 1 only — see `experiments.md` for full history):
 
 | Method | k-NN@20 | Linear probe |
 |--------|---------|--------------|
