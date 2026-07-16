@@ -19,6 +19,7 @@ from tripletjepa.views import (
     class_negatives,
     corrupt_progress,
     instance_negatives,
+    make_augmented_view,
     make_corrupt_view,
     scramble_patches,
 )
@@ -42,8 +43,13 @@ class TrainConfig:
 
     # Model
     embed_dim: int = 256
+    backbone: str = "resnet"  # resnet | vit
+    vit_patch_size: int = 4
+    vit_depth: int = 6
+    vit_heads: int = 4
+    vit_mlp_dim: int = 512
     ema_momentum: float = 0.996
-    training_mode: str = "jepa_ema"  # jepa_ema | latent_triplet | latent_vicreg | latent_sigreg | latent_uniformity | latent_triplet_uniformity
+    training_mode: str = "jepa_ema"  # jepa_ema | latent_triplet | latent_vicreg | latent_sigreg | latent_uniformity | latent_triplet_uniformity | latent_jepa_augment_uniformity
     use_ema_target: bool = True
     anchor_mode: str = "predictor_corrupt"  # predictor_corrupt | encoder_corrupt | encoder_clean
 
@@ -51,13 +57,19 @@ class TrainConfig:
     margin: float = 0.2
     triplet_weight: float = 0.5
     negative_mode: str = "instance"  # instance | class | scramble | scramble_class
-    corrupt_schedule: str = "block"  # block | mask_curriculum | blur_to_mask
+    corrupt_schedule: str = "block"  # block | block_curriculum | mask_curriculum | blur_to_mask
     mask_ratio: float = 0.6
     patch_blur_ratio_min: float = 0.1
     patch_size: int = 4
     blur_sigma_min: float = 0.5
     blur_sigma_max: float = 3.0
     scramble_patch_size: int = 4
+    aug_brightness: float = 0.4
+    aug_contrast: float = 0.4
+    aug_saturation: float = 0.4
+    aug_hue: float = 0.1
+    aug_align_weight: float = 0.0
+    align_weight: float = 1.0
     vicreg_inv_weight: float = 0.0
     vicreg_var_weight: float = 0.0
     vicreg_cov_weight: float = 0.0
@@ -127,10 +139,17 @@ def resolve_training_mode(cfg: TrainConfig) -> TrainConfig:
         cfg.use_ema_target = False
         cfg.negative_mode = "scramble"
         return cfg
+    if cfg.training_mode == "latent_jepa_augment_uniformity":
+        # JEPA on corrupt path + encoder(aug) align/triplet vs clean + uniformity on clean/aug.
+        cfg.use_ema_target = False
+        cfg.negative_mode = "scramble"
+        if cfg.aug_align_weight <= 0:
+            cfg.aug_align_weight = 1.0
+        return cfg
     raise ValueError(
         f"Unknown training_mode={cfg.training_mode!r}; "
         "expected jepa_ema, latent_triplet, latent_vicreg, latent_sigreg, "
-        "latent_uniformity, or latent_triplet_uniformity"
+        "latent_uniformity, latent_triplet_uniformity, or latent_jepa_augment_uniformity"
     )
 
 
@@ -170,6 +189,11 @@ def train_one_epoch(
       Cosine align + λ·cosine_triplet(anchor, pos, scramble_neg) + w·Uniformity.
       Negative = encoder(scramble(same image)).detach() — label-free distortion.
 
+    latent_jepa_augment_uniformity mode (single encoder):
+      JEPA: cosine(predictor(corrupt), encoder(clean)).
+      Aug align + triplet: encoder(aug) vs encoder(clean) vs scramble(aug) — no predictor.
+      Uniformity on encoder(clean) batch only (not aug, avoids fighting aug_align).
+
     jepa_ema mode (default):
       anchor   = predictor(encoder(corrupt))
       positive = target_encoder(clean).detach()
@@ -187,6 +211,7 @@ def train_one_epoch(
     use_uniformity = cfg.uniformity_weight > 0
     use_proto = cfg.proto_weight > 0
     use_triplet_uniformity = cfg.training_mode == "latent_triplet_uniformity"
+    use_jepa_augment = cfg.training_mode == "latent_jepa_augment_uniformity"
     use_sphere = use_uniformity or use_proto or use_triplet_uniformity
     if use_vicreg:
         totals["vicreg_inv"] = 0.0
@@ -195,14 +220,16 @@ def train_one_epoch(
     if use_sigreg:
         totals["sigreg_inv"] = 0.0
         totals["sigreg"] = 0.0
-    if use_uniformity or use_triplet_uniformity:
+    if use_uniformity or use_triplet_uniformity or use_jepa_augment:
         totals["align"] = 0.0
-    if use_uniformity:
+    if use_uniformity or use_jepa_augment:
         totals["uniformity"] = 0.0
     elif use_proto:
         totals["align"] = 0.0
-    if use_triplet_uniformity and cfg.triplet_weight > 0:
+    if (use_triplet_uniformity or use_jepa_augment) and cfg.triplet_weight > 0:
         totals["triplet"] = 0.0
+    if use_jepa_augment:
+        totals["aug_align"] = 0.0
     if use_proto:
         totals["swav"] = 0.0
     n = 0
@@ -224,9 +251,6 @@ def train_one_epoch(
             min_block=cfg.patch_size,
         )
 
-        z_anchor, z_positive = model(corrupt, images, anchor_mode=cfg.anchor_mode)
-        z_pos = z_positive.detach()  # stop-grad on positive path
-
         z_neg = None
         z_neg_extra = None
         z_vicreg_a = None
@@ -235,48 +259,90 @@ def train_one_epoch(
         z_inv_b = None
         z_sigreg = None
         z_uniformity = None
+        z_enc_aug = None
         prototypes = None
         z_proto_a = None
         z_proto_b = None
         global_step = (epoch - 1) * steps_per_epoch + batch_idx
-        if cfg.triplet_weight > 0 or use_triplet_uniformity:
-            if cfg.negative_mode == "scramble" or use_triplet_uniformity:
-                neg_view = scramble_patches(images, patch_size=cfg.scramble_patch_size)
-                z_neg = model.encode_target(neg_view).detach()
-            elif cfg.negative_mode == "scramble_class":
-                neg_view = scramble_patches(images, patch_size=cfg.scramble_patch_size)
-                z_neg = model.encode_target(neg_view).detach()
-                z_neg_extra = class_negatives(z_pos, labels)
-            elif cfg.negative_mode == "class":
-                z_neg = class_negatives(z_pos, labels)
-            elif cfg.negative_mode == "instance":
-                z_neg = instance_negatives(z_pos)
-            else:
-                raise ValueError(
-                    f"Unknown negative_mode={cfg.negative_mode!r}; "
-                    "expected instance, class, scramble, or scramble_class"
-                )
 
-        if use_vicreg or use_sigreg or use_sphere:
-            z_vicreg_a = model.encoder(corrupt)
-            z_vicreg_b = model.encoder(images)
-            if cfg.vicreg_inv_weight > 0 or use_sigreg or use_sphere:
-                if cfg.anchor_mode == "predictor_corrupt":
-                    z_inv_a = model.predictor(z_vicreg_a)
-                    z_inv_b = z_vicreg_b.detach()
+        if use_jepa_augment:
+            augmented = make_augmented_view(
+                images,
+                brightness=cfg.aug_brightness,
+                contrast=cfg.aug_contrast,
+                saturation=cfg.aug_saturation,
+                hue=cfg.aug_hue,
+            )
+            z_clean_enc = model.encoder(images)
+            z_aug_enc = model.encoder(augmented)
+            z_corrupt_enc = model.encoder(corrupt)
+            z_inv_a = model.predictor(z_corrupt_enc)
+            z_inv_b = z_clean_enc.detach()
+            z_enc_aug = z_aug_enc
+            z_anchor, z_pos = z_inv_a, z_inv_b
+            # Uniformity on clean only — concat(clean, aug) fights aug_align by spreading pairs apart.
+            z_uniformity = z_clean_enc
+
+            if cfg.triplet_weight > 0:
+                z_ref = z_clean_enc.detach()
+                if cfg.negative_mode == "scramble":
+                    neg_view = scramble_patches(augmented, patch_size=cfg.scramble_patch_size)
+                    z_neg = model.encode_target(neg_view).detach()
+                elif cfg.negative_mode == "scramble_class":
+                    neg_view = scramble_patches(images, patch_size=cfg.scramble_patch_size)
+                    z_neg = model.encode_target(neg_view).detach()
+                    z_neg_extra = class_negatives(z_ref, labels)
+                elif cfg.negative_mode == "class":
+                    z_neg = class_negatives(z_ref, labels)
+                elif cfg.negative_mode == "instance":
+                    z_neg = instance_negatives(z_ref)
                 else:
-                    z_inv_a, z_inv_b = z_vicreg_a, z_vicreg_b
-            if use_sigreg:
-                z_sigreg = torch.cat([z_vicreg_a, z_vicreg_b], dim=0)
-            if use_uniformity:
-                z_uniformity = torch.cat([z_vicreg_a, z_vicreg_b], dim=0)
-            if use_proto:
-                if model.prototype_bank is None:
-                    raise ValueError("proto_weight > 0 requires model.prototype_bank")
-                prototypes = model.prototype_bank()
-                # SwAV views: predicted corrupt path vs clean encoder (grad on both).
-                z_proto_a = z_inv_a if cfg.anchor_mode == "predictor_corrupt" else z_vicreg_a
-                z_proto_b = z_vicreg_b
+                    raise ValueError(
+                        f"Unknown negative_mode={cfg.negative_mode!r}; "
+                        "expected instance, class, scramble, or scramble_class"
+                    )
+        else:
+            z_anchor, z_positive = model(corrupt, images, anchor_mode=cfg.anchor_mode)
+            z_pos = z_positive.detach()  # stop-grad on positive path
+
+            if cfg.triplet_weight > 0 or use_triplet_uniformity:
+                if cfg.negative_mode == "scramble" or use_triplet_uniformity:
+                    neg_view = scramble_patches(images, patch_size=cfg.scramble_patch_size)
+                    z_neg = model.encode_target(neg_view).detach()
+                elif cfg.negative_mode == "scramble_class":
+                    neg_view = scramble_patches(images, patch_size=cfg.scramble_patch_size)
+                    z_neg = model.encode_target(neg_view).detach()
+                    z_neg_extra = class_negatives(z_pos, labels)
+                elif cfg.negative_mode == "class":
+                    z_neg = class_negatives(z_pos, labels)
+                elif cfg.negative_mode == "instance":
+                    z_neg = instance_negatives(z_pos)
+                else:
+                    raise ValueError(
+                        f"Unknown negative_mode={cfg.negative_mode!r}; "
+                        "expected instance, class, scramble, or scramble_class"
+                    )
+
+            if use_vicreg or use_sigreg or use_sphere:
+                z_vicreg_a = model.encoder(corrupt)
+                z_vicreg_b = model.encoder(images)
+                if cfg.vicreg_inv_weight > 0 or use_sigreg or use_sphere:
+                    if cfg.anchor_mode == "predictor_corrupt":
+                        z_inv_a = model.predictor(z_vicreg_a)
+                        z_inv_b = z_vicreg_b.detach()
+                    else:
+                        z_inv_a, z_inv_b = z_vicreg_a, z_vicreg_b
+                if use_sigreg:
+                    z_sigreg = torch.cat([z_vicreg_a, z_vicreg_b], dim=0)
+                if use_uniformity:
+                    z_uniformity = torch.cat([z_vicreg_a, z_vicreg_b], dim=0)
+                if use_proto:
+                    if model.prototype_bank is None:
+                        raise ValueError("proto_weight > 0 requires model.prototype_bank")
+                    prototypes = model.prototype_bank()
+                    # SwAV views: predicted corrupt path vs clean encoder (grad on both).
+                    z_proto_a = z_inv_a if cfg.anchor_mode == "predictor_corrupt" else z_vicreg_a
+                    z_proto_b = z_vicreg_b
 
         loss, stats = criterion(
             z_anchor,
@@ -289,6 +355,7 @@ def train_one_epoch(
             z_inv_b,
             z_sigreg,
             z_uniformity,
+            z_enc_aug,
             prototypes,
             z_proto_a,
             z_proto_b,
@@ -339,6 +406,9 @@ def _checkpoint_config_keys() -> tuple[str, ...]:
     return (
         "training_mode",
         "embed_dim",
+        "backbone",
+        "vit_patch_size",
+        "vit_depth",
         "anchor_mode",
         "use_ema_target",
         "proto_num",
@@ -426,10 +496,14 @@ def run_training(cfg: TrainConfig) -> dict:
     cfg.to_json(out / "config.json")
 
     print(
-        f"training_mode={cfg.training_mode} | use_ema_target={cfg.use_ema_target} | "
+        f"training_mode={cfg.training_mode} | backbone={cfg.backbone} | "
+        f"use_ema_target={cfg.use_ema_target} | "
         f"anchor_mode={cfg.anchor_mode} | negative_mode={cfg.negative_mode} | "
         f"corrupt_schedule={cfg.corrupt_schedule} | "
         f"triplet_weight={cfg.triplet_weight} | "
+        f"align_weight={cfg.align_weight} | "
+        f"aug_align_weight={cfg.aug_align_weight} | "
+        f"margin={cfg.margin} | "
         f"vicreg_inv_weight={cfg.vicreg_inv_weight} | "
         f"vicreg_var_weight={cfg.vicreg_var_weight} | "
         f"vicreg_cov_weight={cfg.vicreg_cov_weight} | "
@@ -440,6 +514,13 @@ def run_training(cfg: TrainConfig) -> dict:
         f"proto_weight={cfg.proto_weight} | "
         f"proto_num={cfg.proto_num}"
     )
+
+    if cfg.backbone.lower() in {"vit", "small_vit"}:
+        print(
+            f"vit_patch_size={cfg.vit_patch_size} | vit_depth={cfg.vit_depth} | "
+            f"vit_heads={cfg.vit_heads} | vit_mlp_dim={cfg.vit_mlp_dim} | "
+            f"embed_dim={cfg.embed_dim}"
+        )
 
     train_loader, test_loader, spec = get_dataloaders(
         cfg.dataset,
@@ -456,8 +537,15 @@ def run_training(cfg: TrainConfig) -> dict:
         ema_momentum=cfg.ema_momentum,
         use_ema_target=cfg.use_ema_target,
         num_prototypes=cfg.proto_num if cfg.proto_weight > 0 else 0,
+        backbone=cfg.backbone,
+        image_size=spec.image_size,
+        vit_patch_size=cfg.vit_patch_size,
+        vit_depth=cfg.vit_depth,
+        vit_heads=cfg.vit_heads,
+        vit_mlp_dim=cfg.vit_mlp_dim,
     ).to(device)
     params = model.param_count(cfg.anchor_mode)
+    print(f"params encoder={params['encoder']} predictor={params['predictor']} total={params['total_trainable']}")
 
     train_params = list(model.encoder.parameters())
     if cfg.anchor_mode == "predictor_corrupt":
@@ -486,6 +574,11 @@ def run_training(cfg: TrainConfig) -> dict:
         sinkhorn_iters=cfg.sinkhorn_iters,
         sinkhorn_eps=cfg.sinkhorn_eps,
         triplet_cosine=(cfg.training_mode == "latent_triplet_uniformity"),
+        jepa_augment_triplet_uniformity=(
+            cfg.training_mode == "latent_jepa_augment_uniformity"
+        ),
+        aug_align_weight=cfg.aug_align_weight,
+        align_weight=cfg.align_weight,
     )
 
     if ckpt is not None:
@@ -505,6 +598,7 @@ def run_training(cfg: TrainConfig) -> dict:
     use_uniformity = cfg.uniformity_weight > 0
     use_proto = cfg.proto_weight > 0
     use_triplet_uniformity = cfg.training_mode == "latent_triplet_uniformity"
+    use_jepa_augment = cfg.training_mode == "latent_jepa_augment_uniformity"
     steps_per_epoch = len(train_loader)
 
     for epoch in range(start_epoch, cfg.epochs + 1):
@@ -521,11 +615,13 @@ def run_training(cfg: TrainConfig) -> dict:
         )
         scheduler.step()
         row: dict = {"epoch": epoch, **train_stats, "lr": scheduler.get_last_lr()[0]}
-        if cfg.corrupt_schedule in {"blur_to_mask", "mask_curriculum"}:
+        if cfg.corrupt_schedule in {"blur_to_mask", "mask_curriculum", "block_curriculum"}:
             row["corrupt_progress"] = progress
-            row["patch_blur_ratio"] = active_patch_blur_ratio(
+            row["active_mask_ratio"] = active_patch_blur_ratio(
                 progress, cfg.patch_blur_ratio_min, cfg.mask_ratio
             )
+        if cfg.corrupt_schedule in {"blur_to_mask", "mask_curriculum"}:
+            row["patch_blur_ratio"] = row["active_mask_ratio"]
             row["blur_sigma"] = cfg.blur_sigma_min + progress * (
                 cfg.blur_sigma_max - cfg.blur_sigma_min
             )
@@ -545,12 +641,14 @@ def run_training(cfg: TrainConfig) -> dict:
 
         history.append(row)
         parts = [f"epoch {epoch:03d}/{cfg.epochs} | loss {row['loss']:.4f}"]
-        if cfg.triplet_weight > 0 and not use_triplet_uniformity:
+        if cfg.triplet_weight > 0 and not use_triplet_uniformity and not use_jepa_augment:
             parts.append(f"jepa {row['jepa']:.4f}")
             parts.append(f"triplet {row['triplet']:.4f}")
-        elif use_triplet_uniformity or use_uniformity or use_proto:
+        elif use_triplet_uniformity or use_jepa_augment or use_uniformity or use_proto:
             if "align" in row:
                 parts.append(f"align {row['align']:.4f}")
+            if "aug_align" in row:
+                parts.append(f"aug_align {row['aug_align']:.4f}")
             if "uniformity" in row:
                 parts.append(f"unif {row['uniformity']:.4f}")
             if "triplet" in row:
@@ -575,6 +673,8 @@ def run_training(cfg: TrainConfig) -> dict:
         else:
             parts.append(f"jepa {row['jepa']:.4f}")
             parts.append("triplet n/a")
+        if cfg.corrupt_schedule == "block_curriculum":
+            parts.append(f"mask {row['active_mask_ratio']:.2f}")
         if cfg.corrupt_schedule in {"blur_to_mask", "mask_curriculum"}:
             parts.append(f"blur σ {row['blur_sigma']:.2f}")
             parts.append(f"patch blur {row['patch_blur_ratio']:.2f}")

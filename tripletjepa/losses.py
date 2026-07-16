@@ -165,6 +165,9 @@ class TripletJEPALoss:
     sinkhorn_iters: int = 3
     sinkhorn_eps: float = 0.05
     triplet_cosine: bool = False
+    jepa_augment_triplet_uniformity: bool = False
+    aug_align_weight: float = 0.0
+    align_weight: float = 1.0
 
     def __call__(
         self,
@@ -178,6 +181,7 @@ class TripletJEPALoss:
         z_inv_b: torch.Tensor | None = None,
         z_sigreg: torch.Tensor | None = None,
         z_uniformity: torch.Tensor | None = None,
+        z_enc_aug: torch.Tensor | None = None,
         prototypes: torch.Tensor | None = None,
         z_proto_a: torch.Tensor | None = None,
         z_proto_b: torch.Tensor | None = None,
@@ -203,6 +207,35 @@ class TripletJEPALoss:
             total = (1.0 - lam) * l_inv + lam * l_sig
             stats["sigreg_inv"] = l_inv.item()
             stats["sigreg"] = l_sig.item()
+        elif self.jepa_augment_triplet_uniformity:
+            if z_inv_a is None or z_inv_b is None:
+                raise ValueError("z_inv_a and z_inv_b are required for jepa_augment_uniformity")
+            l_align = jepa_cosine_loss(z_inv_a, z_inv_b)
+            total = torch.tensor(0.0, device=z_inv_a.device)
+            stats["align"] = l_align.item()
+            if self.align_weight > 0:
+                total = total + self.align_weight * l_align
+            if z_enc_aug is not None:
+                l_aug_align = jepa_cosine_loss(z_enc_aug, z_inv_b)
+                stats["aug_align"] = l_aug_align.item()
+                if self.aug_align_weight > 0:
+                    total = total + self.aug_align_weight * l_aug_align
+            if use_uniformity:
+                if z_uniformity is None:
+                    raise ValueError("z_uniformity is required when uniformity_weight > 0")
+                l_unif = uniformity_loss(z_uniformity, self.uniformity_t)
+                total = total + self.uniformity_weight * l_unif
+                stats["uniformity"] = l_unif.item()
+            if self.triplet_weight > 0:
+                if z_enc_aug is None or z_negative is None:
+                    raise ValueError(
+                        "z_enc_aug and z_negative are required when triplet_weight > 0"
+                    )
+                l_triplet = triplet_cosine_loss(
+                    z_enc_aug, z_inv_b, z_negative, margin=self.margin
+                )
+                total = total + self.triplet_weight * l_triplet
+                stats["triplet"] = l_triplet.item()
         elif self.triplet_cosine:
             if z_inv_a is None or z_inv_b is None:
                 raise ValueError("z_inv_a and z_inv_b are required for triplet_uniformity")

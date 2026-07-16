@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import random
 
 import torch
 import torch.nn.functional as F
@@ -134,6 +135,20 @@ def progressive_patch_blur(
     return blur_patches(x, mask_ratio=patch_ratio, sigma=sigma, patch_size=patch_size)
 
 
+def progressive_block_mask(
+    x: torch.Tensor,
+    progress: float,
+    *,
+    mask_ratio_end: float = 0.6,
+    mask_ratio_start: float = 0.1,
+    min_block: int = 4,
+) -> torch.Tensor:
+    """Ramp multi-block zero masking: fewer masked blocks early, more later."""
+    progress = float(max(0.0, min(1.0, progress)))
+    ratio = active_patch_blur_ratio(progress, mask_ratio_start, mask_ratio_end)
+    return block_mask(x, mask_ratio=ratio, min_block=min_block)
+
+
 def progressive_blur_to_mask(
     x: torch.Tensor,
     progress: float,
@@ -170,6 +185,14 @@ def make_corrupt_view(
     """Build the context (corrupt) view for JEPA training."""
     if schedule == "block":
         return block_mask(x, mask_ratio=mask_ratio, min_block=min_block)
+    if schedule == "block_curriculum":
+        return progressive_block_mask(
+            x,
+            progress,
+            mask_ratio_end=mask_ratio,
+            mask_ratio_start=patch_blur_ratio_min,
+            min_block=min_block,
+        )
     if schedule == "mask_curriculum":
         return progressive_patch_blur(
             x,
@@ -192,7 +215,7 @@ def make_corrupt_view(
         )
     raise ValueError(
         f"Unknown corrupt_schedule={schedule!r}; "
-        "expected 'block', 'mask_curriculum', or 'blur_to_mask'"
+        "expected 'block', 'block_curriculum', 'mask_curriculum', or 'blur_to_mask'"
     )
 
 
@@ -221,6 +244,37 @@ def scramble_patches(
     shuffled = shuffled.view(b, c, gh, gw, patch_size, patch_size)
     shuffled = shuffled.permute(0, 1, 2, 4, 3, 5).contiguous()
     return shuffled.view(b, c, h, w)
+
+
+def make_augmented_view(
+    x: torch.Tensor,
+    *,
+    brightness: float = 0.4,
+    contrast: float = 0.4,
+    saturation: float = 0.4,
+    hue: float = 0.1,
+    p_flip: float = 0.5,
+) -> torch.Tensor:
+    """Strong appearance aug on tensor views: flip + color jitter (geometry-preserving).
+
+    Applied on top of the dataloader crop/flip so the encoder must use shape/texture,
+    not absolute color or low-level edge cues alone.
+    """
+    out = x.clone()
+    for i in range(out.size(0)):
+        img = out[i]
+        if torch.rand(1, device=x.device).item() < p_flip:
+            img = TF.hflip(img)
+        b_factor = 1.0 + random.uniform(-brightness, brightness)
+        img = TF.adjust_brightness(img, b_factor)
+        c_factor = 1.0 + random.uniform(-contrast, contrast)
+        img = TF.adjust_contrast(img, c_factor)
+        s_factor = 1.0 + random.uniform(-saturation, saturation)
+        img = TF.adjust_saturation(img, s_factor)
+        h_shift = random.uniform(-hue, hue)
+        img = TF.adjust_hue(img, h_shift)
+        out[i] = img
+    return out
 
 
 def instance_negatives(z: torch.Tensor) -> torch.Tensor:
