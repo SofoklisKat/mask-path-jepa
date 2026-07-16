@@ -43,7 +43,7 @@ class TrainConfig:
     # Model
     embed_dim: int = 256
     ema_momentum: float = 0.996
-    training_mode: str = "jepa_ema"  # jepa_ema | latent_triplet | latent_vicreg | latent_sigreg | latent_uniformity
+    training_mode: str = "jepa_ema"  # jepa_ema | latent_triplet | latent_vicreg | latent_sigreg | latent_uniformity | latent_triplet_uniformity
     use_ema_target: bool = True
     anchor_mode: str = "predictor_corrupt"  # predictor_corrupt | encoder_corrupt | encoder_clean
 
@@ -122,9 +122,15 @@ def resolve_training_mode(cfg: TrainConfig) -> TrainConfig:
         # One encoder, cosine JEPA alignment + hypersphere uniformity (Wang & Isola).
         cfg.use_ema_target = False
         return cfg
+    if cfg.training_mode == "latent_triplet_uniformity":
+        # Cosine JEPA align + cosine triplet (same-image scramble neg) + uniformity.
+        cfg.use_ema_target = False
+        cfg.negative_mode = "scramble"
+        return cfg
     raise ValueError(
         f"Unknown training_mode={cfg.training_mode!r}; "
-        "expected jepa_ema, latent_triplet, latent_vicreg, latent_sigreg, or latent_uniformity"
+        "expected jepa_ema, latent_triplet, latent_vicreg, latent_sigreg, "
+        "latent_uniformity, or latent_triplet_uniformity"
     )
 
 
@@ -160,6 +166,10 @@ def train_one_epoch(
       Cosine(predictor(corrupt), encoder(clean)) + w·Uniformity(encoder embeddings).
       Optional SwAV: unsupervised prototypes (no labels) swapped prediction on sphere.
 
+    latent_triplet_uniformity mode (single encoder):
+      Cosine align + λ·cosine_triplet(anchor, pos, scramble_neg) + w·Uniformity.
+      Negative = encoder(scramble(same image)).detach() — label-free distortion.
+
     jepa_ema mode (default):
       anchor   = predictor(encoder(corrupt))
       positive = target_encoder(clean).detach()
@@ -176,7 +186,8 @@ def train_one_epoch(
     use_sigreg = cfg.sigreg_weight > 0
     use_uniformity = cfg.uniformity_weight > 0
     use_proto = cfg.proto_weight > 0
-    use_sphere = use_uniformity or use_proto
+    use_triplet_uniformity = cfg.training_mode == "latent_triplet_uniformity"
+    use_sphere = use_uniformity or use_proto or use_triplet_uniformity
     if use_vicreg:
         totals["vicreg_inv"] = 0.0
         totals["vicreg_var"] = 0.0
@@ -184,11 +195,14 @@ def train_one_epoch(
     if use_sigreg:
         totals["sigreg_inv"] = 0.0
         totals["sigreg"] = 0.0
-    if use_uniformity:
+    if use_uniformity or use_triplet_uniformity:
         totals["align"] = 0.0
+    if use_uniformity:
         totals["uniformity"] = 0.0
     elif use_proto:
         totals["align"] = 0.0
+    if use_triplet_uniformity and cfg.triplet_weight > 0:
+        totals["triplet"] = 0.0
     if use_proto:
         totals["swav"] = 0.0
     n = 0
@@ -225,8 +239,8 @@ def train_one_epoch(
         z_proto_a = None
         z_proto_b = None
         global_step = (epoch - 1) * steps_per_epoch + batch_idx
-        if cfg.triplet_weight > 0:
-            if cfg.negative_mode == "scramble":
+        if cfg.triplet_weight > 0 or use_triplet_uniformity:
+            if cfg.negative_mode == "scramble" or use_triplet_uniformity:
                 neg_view = scramble_patches(images, patch_size=cfg.scramble_patch_size)
                 z_neg = model.encode_target(neg_view).detach()
             elif cfg.negative_mode == "scramble_class":
@@ -471,6 +485,7 @@ def run_training(cfg: TrainConfig) -> dict:
         proto_temperature=cfg.proto_temperature,
         sinkhorn_iters=cfg.sinkhorn_iters,
         sinkhorn_eps=cfg.sinkhorn_eps,
+        triplet_cosine=(cfg.training_mode == "latent_triplet_uniformity"),
     )
 
     if ckpt is not None:
@@ -489,6 +504,7 @@ def run_training(cfg: TrainConfig) -> dict:
     use_sigreg = cfg.sigreg_weight > 0
     use_uniformity = cfg.uniformity_weight > 0
     use_proto = cfg.proto_weight > 0
+    use_triplet_uniformity = cfg.training_mode == "latent_triplet_uniformity"
     steps_per_epoch = len(train_loader)
 
     for epoch in range(start_epoch, cfg.epochs + 1):
@@ -529,14 +545,16 @@ def run_training(cfg: TrainConfig) -> dict:
 
         history.append(row)
         parts = [f"epoch {epoch:03d}/{cfg.epochs} | loss {row['loss']:.4f}"]
-        if cfg.triplet_weight > 0:
+        if cfg.triplet_weight > 0 and not use_triplet_uniformity:
             parts.append(f"jepa {row['jepa']:.4f}")
             parts.append(f"triplet {row['triplet']:.4f}")
-        elif use_uniformity or use_proto:
+        elif use_triplet_uniformity or use_uniformity or use_proto:
             if "align" in row:
                 parts.append(f"align {row['align']:.4f}")
             if "uniformity" in row:
                 parts.append(f"unif {row['uniformity']:.4f}")
+            if "triplet" in row:
+                parts.append(f"triplet {row['triplet']:.4f}")
             if "swav" in row:
                 parts.append(f"swav {row['swav']:.4f}")
             parts.append(f"jepa(log) {row['jepa']:.4f}")

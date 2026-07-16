@@ -28,6 +28,21 @@ def triplet_loss(
     return F.relu(d_pos - d_neg + margin).mean()
 
 
+def triplet_cosine_loss(
+    anchor: torch.Tensor,
+    positive: torch.Tensor,
+    negative: torch.Tensor,
+    margin: float = 0.2,
+) -> torch.Tensor:
+    """Margin triplet on unit sphere using JEPA-style cosine distance (1 - cos)."""
+    anchor_n = F.normalize(anchor, dim=-1)
+    positive_n = F.normalize(positive, dim=-1)
+    negative_n = F.normalize(negative, dim=-1)
+    d_pos = 1.0 - (anchor_n * positive_n).sum(dim=-1)
+    d_neg = 1.0 - (anchor_n * negative_n).sum(dim=-1)
+    return F.relu(d_pos - d_neg + margin).mean()
+
+
 def vicreg_invariance(z_a: torch.Tensor, z_b: torch.Tensor) -> torch.Tensor:
     """MSE between two views (VICReg alignment / invariance term)."""
     return F.mse_loss(z_a, z_b)
@@ -149,6 +164,7 @@ class TripletJEPALoss:
     proto_temperature: float = 0.1
     sinkhorn_iters: int = 3
     sinkhorn_eps: float = 0.05
+    triplet_cosine: bool = False
 
     def __call__(
         self,
@@ -187,6 +203,26 @@ class TripletJEPALoss:
             total = (1.0 - lam) * l_inv + lam * l_sig
             stats["sigreg_inv"] = l_inv.item()
             stats["sigreg"] = l_sig.item()
+        elif self.triplet_cosine:
+            if z_inv_a is None or z_inv_b is None:
+                raise ValueError("z_inv_a and z_inv_b are required for triplet_uniformity")
+            l_align = jepa_cosine_loss(z_inv_a, z_inv_b)
+            total = l_align
+            stats["align"] = l_align.item()
+            if use_uniformity:
+                if z_uniformity is None:
+                    raise ValueError("z_uniformity is required when uniformity_weight > 0")
+                l_unif = uniformity_loss(z_uniformity, self.uniformity_t)
+                total = total + self.uniformity_weight * l_unif
+                stats["uniformity"] = l_unif.item()
+            if self.triplet_weight > 0:
+                if z_negative is None:
+                    raise ValueError("z_negative is required when triplet_weight > 0")
+                l_triplet = triplet_cosine_loss(
+                    z_inv_a, z_inv_b, z_negative, margin=self.margin
+                )
+                total = total + self.triplet_weight * l_triplet
+                stats["triplet"] = l_triplet.item()
         elif use_uniformity or use_proto:
             if z_inv_a is None or z_inv_b is None:
                 raise ValueError("z_inv_a and z_inv_b are required for sphere alignment")
@@ -235,7 +271,7 @@ class TripletJEPALoss:
         else:
             total = l_jepa
 
-        if self.triplet_weight > 0:
+        if self.triplet_weight > 0 and not self.triplet_cosine:
             if z_negative is None:
                 raise ValueError("z_negative is required when triplet_weight > 0")
             l_triplet = triplet_loss(z_anchor, z_positive, z_negative, margin=self.margin)
