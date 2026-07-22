@@ -8,6 +8,123 @@ import torch.nn.functional as F
 import torchvision.transforms.functional as TF
 
 
+def sample_patch_positions(
+    batch_size: int,
+    grid_h: int,
+    grid_w: int,
+    n_patches: int,
+    device: torch.device,
+) -> torch.Tensor:
+    """Random patch indices per image, shape (B, n_patches)."""
+    n_grid = grid_h * grid_w
+    n_patches = min(n_patches, n_grid)
+    keys = torch.rand(batch_size, n_grid, device=device)
+    return torch.argsort(keys, dim=1)[:, :n_patches]
+
+
+def blur_at_positions(
+    x: torch.Tensor,
+    positions: torch.Tensor,
+    *,
+    patch_size: int,
+    sigma: float,
+) -> torch.Tensor:
+    """Blur selected non-overlapping patches; same grid indices for every level in a ladder."""
+    if sigma <= 1e-3:
+        return x.clone()
+    out = x.clone()
+    _, _, h, w = x.shape
+    grid_w = w // patch_size
+    for i in range(x.size(0)):
+        for pos in positions[i]:
+            gh = int(pos // grid_w)
+            gw = int(pos % grid_w)
+            top, left = gh * patch_size, gw * patch_size
+            patch = x[i : i + 1, :, top : top + patch_size, left : left + patch_size]
+            out[i : i + 1, :, top : top + patch_size, left : left + patch_size] = blur_patch_tile(
+                patch, sigma, patch_size
+            )
+    return out
+
+
+def patch_mask_from_positions(
+    positions: torch.Tensor,
+    *,
+    height: int,
+    width: int,
+    patch_size: int,
+) -> torch.Tensor:
+    """Binary pixel mask (B, 1, H, W) from flat patch indices (B, n_patches)."""
+    b, _ = positions.shape
+    grid_h, grid_w = height // patch_size, width // patch_size
+    flat = torch.zeros(b, grid_h * grid_w, device=positions.device, dtype=torch.float32)
+    flat.scatter_(1, positions.long(), 1.0)
+    patch_grid = flat.view(b, grid_h, grid_w)
+    pixel = patch_grid.repeat_interleave(patch_size, dim=1).repeat_interleave(patch_size, dim=2)
+    return pixel.unsqueeze(1)
+
+
+def alpha_mask_at_positions(
+    x: torch.Tensor,
+    positions: torch.Tensor,
+    *,
+    patch_size: int,
+    alpha: float,
+    fill: float = 0.0,
+    mask: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """Blend selected patches toward ``fill``; alpha=1 is a hard zero/mean mask."""
+    alpha = float(max(0.0, min(1.0, alpha)))
+    if alpha <= 0.0:
+        return x
+    if mask is None:
+        _, _, h, w = x.shape
+        mask = patch_mask_from_positions(
+            positions, height=h, width=w, patch_size=patch_size
+        ).to(dtype=x.dtype)
+    return x * (1.0 - alpha * mask) + fill * alpha * mask
+
+
+@torch.no_grad()
+def distortion_ladder(
+    x: torch.Tensor,
+    *,
+    mask_ratio: float = 0.6,
+    patch_size: int = 4,
+    similarity: float = 0.9,
+    transparency: float = 0.5,
+) -> torch.Tensor:
+    """Build views with shared patch locations and increasing mask severity.
+
+    Three corrupt levels (mildest -> hardest):
+      - ``similarity``: fraction of original patch kept (default 0.9 -> alpha=0.1)
+      - ``transparency``: blend toward fill (default 0.5)
+      - hard mask (alpha=1.0)
+
+    Returns (B, 4, C, H, W): clean + 3 corrupt views.
+    """
+    b, c, h, w = x.shape
+    if h % patch_size != 0 or w % patch_size != 0:
+        raise ValueError(f"Image size ({h}, {w}) must be divisible by patch_size={patch_size}")
+    grid_h, grid_w = h // patch_size, w // patch_size
+    n_patches = max(1, int(mask_ratio * grid_h * grid_w))
+    positions = sample_patch_positions(b, grid_h, grid_w, n_patches, x.device)
+
+    alpha_mild = 1.0 - float(max(0.0, min(1.0, similarity)))
+    alpha_semi = float(max(0.0, min(1.0, transparency)))
+    mask = patch_mask_from_positions(
+        positions, height=h, width=w, patch_size=patch_size
+    ).to(dtype=x.dtype)
+
+    levels = [
+        x,
+        alpha_mask_at_positions(x, positions, patch_size=patch_size, alpha=alpha_mild, mask=mask),
+        alpha_mask_at_positions(x, positions, patch_size=patch_size, alpha=alpha_semi, mask=mask),
+        alpha_mask_at_positions(x, positions, patch_size=patch_size, alpha=1.0, mask=mask),
+    ]
+    return torch.stack(levels, dim=1)
+
+
 def block_mask(
     x: torch.Tensor,
     mask_ratio: float = 0.6,

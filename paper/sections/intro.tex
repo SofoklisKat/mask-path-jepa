@@ -1,0 +1,30 @@
+\section{Introduction}
+\label{sec:intro}
+
+Self-supervised learning (SSL) on images has converged on a small set of
+\emph{families}: contrastive instance discrimination
+(SimCLR~\cite{chen2020simclr}), redundancy reduction
+(VICReg~\cite{bardes2022vicreg}, Barlow Twins), predictive coding in latent
+space (I-JEPA~\cite{assran2023ijepa}), and recent Gaussian-regularized JEPA
+variants (LeJEPA~\cite{balestriero2025lejepa}).
+Each family optimizes a different geometry: InfoNCE excels at local
+neighborhood structure (k-NN), while spread and invariance terms often
+improve linear separability.
+
+We ask a practical question for low-resource benchmarks: \emph{given a fixed
+$\sim$3M-parameter encoder and a masked JEPA view pipeline, how do published
+objectives compare at long training (200 epochs), and can we combine the
+strengths of contrastive mask prediction with non-contrastive spread?}
+
+Our contributions are:
+\begin{enumerate}
+  \item A unified CIFAR-100 benchmark with matched architecture, corruption,
+        augmentation, and evaluation (Section~\ref{sec:evaluation}).
+  \item An ablation over representative published losses---JEPA cosine,
+        InfoNCE, VICReg, SIGReg, uniformity, and SwAV---at 200 epochs on the
+        same SmallResNet (Section~\ref{sec:ablation}).
+  \item \textbf{Asymmetric hybrids} that keep InfoNCE on the mask/predictor
+        path and replace augmentation InfoNCE with MSE+var+cov or MSE+SIGReg
+        (Section~\ref{sec:method}), improving linear probe over dual InfoNCE
+        with a controllable k-NN cost.
+\end{enumerate}

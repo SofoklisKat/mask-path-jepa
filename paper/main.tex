@@ -1,0 +1,65 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{subcaption}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{microtype}
+\usepackage[numbers,sort&compress]{natbib}
+
+% pgfplots for ablation scatter
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.18}
+
+\title{Asymmetric InfoNCE--JEPA:\\
+Contrastive Mask Prediction with Spread Regularization\\
+for Low-Resource Self-Supervised Learning}
+
+\author{%
+  Author Names \\
+  Affiliation \\
+  \texttt{email@domain.edu}
+}
+
+\date{}
+
+\newcommand{\sg}{\mathrm{sg}}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+We benchmark published self-supervised objectives---JEPA, InfoNCE, VICReg,
+SIGReg, uniformity, and SwAV---on a fixed $\sim$3M-parameter SmallResNet
+with matched masking, augmentation, and evaluation on CIFAR-100.
+Dual InfoNCE on mask and augmentation paths yields strong k-NN accuracy
+($\sim$0.22) but weak linear probes ($\sim$0.10).
+We propose \emph{asymmetric hybrids} that retain InfoNCE on the masked
+predictor path while replacing augmentation InfoNCE with MSE plus either
+decomposed variance/covariance penalties or LeJEPA-style SIGReg.
+At 100 epochs the SIGReg hybrid reaches linear accuracy 0.171
+(vs.\ 0.103 for dual InfoNCE) with k-NN 0.179.
+A unified 200-epoch ablation and k-NN/linear trade-off plots situate our
+method among standard loss families under identical compute and architecture.
+\end{abstract}
+
+\input{sections/intro}
+\input{sections/evaluation}
+\input{sections/method}
+\input{sections/ablation}
+\input{sections/results}
+
+\section*{Acknowledgments}
+% TODO
+
+\bibliographystyle{plainnat}
+\bibliography{references}
+
+\end{document}

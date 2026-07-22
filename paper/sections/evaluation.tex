@@ -1,0 +1,79 @@
+\section{Evaluation Protocol}
+\label{sec:evaluation}
+
+All methods in this paper share the same \textbf{encoder architecture},
+\textbf{view pipeline}, and \textbf{downstream metrics} so that differences
+reflect the loss function rather than capacity or preprocessing.
+
+\subsection{Architecture and training budget}
+\label{sec:eval-arch}
+
+\begin{itemize}
+  \item \textbf{Encoder:} SmallResNet~\cite{he2016resnet} adapted to
+        $32{\times}32$ inputs: three residual stages, global average pooling,
+        linear projection to $d{=}256$.
+  \item \textbf{Predictor:} two-layer MLP ($256 \rightarrow 512 \rightarrow 256$)
+        with LayerNorm and GELU, used whenever the method aligns
+        $g_\phi(f_\theta(x_c))$ to $f_\theta(\tilde{x})$.
+  \item \textbf{Parameters:} $\sim$2.8M trainable (encoder + predictor);
+        we refer to this as the \emph{3M} setting.
+  \item \textbf{Optimization:} AdamW, learning rate $3{\times}10^{-4}$,
+        weight decay $10^{-4}$, cosine decay, batch size $256$, seed $42$.
+  \item \textbf{Primary budget:} \textbf{200 epochs} for the ablation in
+        Section~\ref{sec:ablation}; additional runs at 100 epochs are
+        reported where 200-epoch checkpoints are not yet available.
+\end{itemize}
+
+Unless noted, we use a \textbf{single online encoder} without an EMA teacher
+(\texttt{use\_ema\_target=false}), matching the latent training modes in our
+codebase.
+EMA-JEPA results are reported separately as an upper reference with a
+stop-gradient target encoder.
+
+\subsection{View construction}
+\label{sec:eval-views}
+
+For every method:
+\begin{enumerate}
+  \item \textbf{Clean} $\tilde{x}$: random crop + horizontal flip (dataset
+        default augmentation).
+  \item \textbf{Corrupt} $x_c$: multi-block masking with ratio $0.6$ on a
+        $4{\times}4$ patch grid (I-JEPA style).
+  \item \textbf{Augmented} $x_a$ (when used): color jitter with
+        brightness/contrast/saturation $=0.4$, hue $=0.1$.
+\end{enumerate}
+Methods that only use two views (e.g.\ pure VICReg on corrupt/clean) omit
+$x_a$; dual-view InfoNCE and our hybrids use all three.
+
+\subsection{Downstream evaluation}
+\label{sec:eval-metrics}
+
+We evaluate \textbf{only the frozen encoder} $f_\theta$; the predictor is
+discarded at test time.
+
+\paragraph{k-NN classification.}
+Extract L2-normalized features from the training and test sets.
+Classify each test image by majority vote among $k{=}20$ nearest training
+neighbors under cosine distance.
+k-NN stresses \emph{local} geometry and instance-level neighborhood structure.
+
+\paragraph{Linear probe.}
+Train a linear classifier (softmax cross-entropy, SGD, 50 epochs) on
+\emph{unnormalized} train features; report top-1 accuracy on the test set.
+The linear probe stresses \emph{global} class separability.
+
+\paragraph{Reporting.}
+We report the best test k-NN and the linear accuracy at the same checkpoint
+unless stated otherwise.
+For long runs we also plot both metrics every 10 epochs to visualize
+convergence and the k-NN / linear trade-off
+(Figure~\ref{fig:tradeoff}).
+
+\subsection{Implementation}
+\label{sec:eval-impl}
+
+Training and evaluation are implemented in the public TripletJEPA repository.
+Each method corresponds to a JSON config under \texttt{configs/} with fixed
+\texttt{training\_mode}, loss weights, and \texttt{run\_name}.
+Checkpoints store model weights, optimizer state, and per-epoch metrics in
+\texttt{history} for reproducible plotting.

@@ -5,6 +5,7 @@ import copy
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torchvision.models import resnet50
 
 
 class ResidualBlock(nn.Module):
@@ -69,6 +70,24 @@ class SmallResNet(nn.Module):
         x = self.layer2(x)
         x = self.layer3(x)
         return self.head(x)
+
+
+class CifarResNet50(nn.Module):
+    """ResNet-50 adapted for 32x32 inputs (CIFAR-style stem, no ImageNet weights)."""
+
+    def __init__(self, in_channels: int = 3, embed_dim: int = 256) -> None:
+        super().__init__()
+        net = resnet50(weights=None)
+        if in_channels != 3:
+            net.conv1 = nn.Conv2d(in_channels, 64, kernel_size=3, stride=1, padding=1, bias=False)
+        else:
+            net.conv1 = nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=False)
+        net.maxpool = nn.Identity()
+        net.fc = nn.Linear(net.fc.in_features, embed_dim)
+        self.net = net
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.net(x)
 
 
 class ViTBlock(nn.Module):
@@ -165,6 +184,8 @@ def build_encoder(
     name = backbone.lower()
     if name in {"resnet", "small_resnet", "cnn"}:
         return SmallResNet(in_channels, embed_dim)
+    if name in {"resnet50", "resnet_50"}:
+        return CifarResNet50(in_channels, embed_dim)
     if name in {"vit", "small_vit"}:
         return SmallViT(
             in_channels=in_channels,
@@ -176,7 +197,7 @@ def build_encoder(
             mlp_dim=vit_mlp_dim,
         )
     raise ValueError(
-        f"Unknown backbone={backbone!r}; expected resnet or vit"
+        f"Unknown backbone={backbone!r}; expected resnet, resnet50, or vit"
     )
 
 
