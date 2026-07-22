@@ -44,8 +44,9 @@ Dual InfoNCE on mask and augmentation paths yields strong k-NN accuracy
 We propose \emph{asymmetric hybrids} that retain InfoNCE on the masked
 predictor path while replacing augmentation InfoNCE with MSE plus either
 decomposed variance/covariance penalties or LeJEPA-style SIGReg.
-At 100 epochs the SIGReg hybrid reaches linear accuracy 0.171
-(vs.\ 0.103 for dual InfoNCE) with k-NN 0.179.
+At 100 epochs the SIGReg hybrid reaches linear accuracy 0.154--0.175 depending on
+training length (best 0.175 @ epoch~390 in a 418-epoch continuation), with k-NN
+0.179--0.193 for the SmallResNet hybrids.
 A unified 200-epoch ablation and k-NN/linear trade-off plots situate our
 method among standard loss families under identical compute and architecture.
 \end{abstract}
