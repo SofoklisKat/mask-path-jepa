@@ -1,0 +1,9 @@
+{
+  "checkpoint": "results/latent_infonce_jepa_augment/checkpoint_best.pt",
+  "knn_acc_full_test": 0.1907999962568283,
+  "knn_k": 20,
+  "plots": [
+    "results/latent_infonce_jepa_augment/embedding_viz/geometry_pca_by_class.png",
+    "results/latent_infonce_jepa_augment/embedding_viz/geometry_knn_neighborhoods.png"
+  ]
+}

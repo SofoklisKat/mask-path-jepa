@@ -14,10 +14,16 @@ from tripletjepa.data import DatasetSpec, get_dataloaders
 from tripletjepa.eval import evaluate_encoder
 from tripletjepa.losses import TripletJEPALoss
 from tripletjepa.models import TripletJEPA
+from tripletjepa.teacher import (
+    TeacherFeatureBank,
+    teacher_weight_at_epoch,
+    teacher_weighted_align_loss,
+)
 from tripletjepa.views import (
     active_patch_blur_ratio,
     class_negatives,
     corrupt_progress,
+    distortion_ladder,
     instance_negatives,
     make_augmented_view,
     make_corrupt_view,
@@ -43,13 +49,13 @@ class TrainConfig:
 
     # Model
     embed_dim: int = 256
-    backbone: str = "resnet"  # resnet | vit
+    backbone: str = "resnet"  # resnet | resnet50 | vit
     vit_patch_size: int = 4
     vit_depth: int = 6
     vit_heads: int = 4
     vit_mlp_dim: int = 512
     ema_momentum: float = 0.996
-    training_mode: str = "jepa_ema"  # jepa_ema | latent_triplet | latent_vicreg | latent_sigreg | latent_uniformity | latent_triplet_uniformity | latent_jepa_augment_uniformity
+    training_mode: str = "jepa_ema"  # jepa_ema | latent_triplet | latent_vicreg | latent_sigreg | latent_uniformity | latent_triplet_uniformity | latent_jepa_augment_uniformity | latent_infonce_jepa_augment | latent_infonce_jepa_vicreg | latent_infonce_jepa_mse_var_cov | latent_infonce_jepa_sigreg | latent_distortion_ranking
     use_ema_target: bool = True
     anchor_mode: str = "predictor_corrupt"  # predictor_corrupt | encoder_corrupt | encoder_clean
 
@@ -70,10 +76,22 @@ class TrainConfig:
     aug_hue: float = 0.1
     aug_align_weight: float = 0.0
     align_weight: float = 1.0
+    jepa_infonce_weight: float = 1.0
+    aug_infonce_weight: float = 1.0
+    infonce_temperature: float = 0.1
+    rank_weight: float = 1.0
+    rank_similarity: float = 0.9
+    rank_transparency: float = 0.5
+    teacher_features_path: str | None = None
+    teacher_align_weight: float = 0.0
+    teacher_align_temperature: float = 0.1
+    teacher_anneal_start_epoch: int = 1
+    teacher_anneal_end_epoch: int = 70
     vicreg_inv_weight: float = 0.0
     vicreg_var_weight: float = 0.0
     vicreg_cov_weight: float = 0.0
     sigreg_weight: float = 0.0
+    sigreg_inv_weight: float = 0.0
     sigreg_num_slices: int = 256
     uniformity_weight: float = 0.0
     uniformity_t: float = 2.0
@@ -146,10 +164,31 @@ def resolve_training_mode(cfg: TrainConfig) -> TrainConfig:
         if cfg.aug_align_weight <= 0:
             cfg.aug_align_weight = 1.0
         return cfg
+    if cfg.training_mode == "latent_infonce_jepa_augment":
+        # InfoNCE on predictor(mask) vs clean batch + optional encoder(aug) vs clean batch.
+        cfg.use_ema_target = False
+        return cfg
+    if cfg.training_mode in {"latent_infonce_jepa_vicreg", "latent_infonce_jepa_mse_var_cov"}:
+        # InfoNCE on predictor(mask) vs clean + VICReg (MSE + var + cov) on encoder(aug/clean).
+        cfg.use_ema_target = False
+        cfg.aug_infonce_weight = 0.0
+        return cfg
+    if cfg.training_mode == "latent_infonce_jepa_sigreg":
+        # InfoNCE on predictor(mask) vs clean + MSE + SIGReg on encoder(aug/clean).
+        cfg.use_ema_target = False
+        cfg.aug_infonce_weight = 0.0
+        return cfg
+    if cfg.training_mode == "latent_distortion_ranking":
+        # Encoder-only: monotonic cosine distance from clean across corruption ladder.
+        cfg.use_ema_target = False
+        cfg.anchor_mode = "encoder_clean"
+        return cfg
     raise ValueError(
         f"Unknown training_mode={cfg.training_mode!r}; "
         "expected jepa_ema, latent_triplet, latent_vicreg, latent_sigreg, "
-        "latent_uniformity, latent_triplet_uniformity, or latent_jepa_augment_uniformity"
+        "latent_uniformity, latent_triplet_uniformity, latent_jepa_augment_uniformity, "
+        "latent_infonce_jepa_augment, latent_infonce_jepa_vicreg, latent_infonce_jepa_mse_var_cov, "
+        "latent_infonce_jepa_sigreg, or latent_distortion_ranking"
     )
 
 
@@ -163,6 +202,8 @@ def train_one_epoch(
     cfg: TrainConfig,
     epoch: int,
     steps_per_epoch: int,
+    teacher_bank: TeacherFeatureBank | None = None,
+    teacher_weight: float = 0.0,
 ) -> dict[str, float]:
     """One SSL epoch in latent space.
 
@@ -194,12 +235,34 @@ def train_one_epoch(
       Aug align + triplet: encoder(aug) vs encoder(clean) vs scramble(aug) — no predictor.
       Uniformity on encoder(clean) batch only (not aug, avoids fighting aug_align).
 
+    latent_infonce_jepa_augment mode (single encoder):
+      L_jepa = InfoNCE(predictor(corrupt), encoder(clean).detach(), batch negatives).
+      L_aug  = InfoNCE(encoder(aug), encoder(clean).detach(), batch negatives).
+      Cosine align / aug_align logged as diagnostics; optional via align_weight / aug_align_weight.
+
+    latent_infonce_jepa_vicreg / latent_infonce_jepa_mse_var_cov (single encoder):
+      L_jepa = InfoNCE(predictor(corrupt), encoder(clean).detach(), batch negatives).
+      L_2nd  = λ·MSE(encoder(aug), encoder(clean)) + μ·L_var + ν·L_cov on both aug/clean batches.
+      Replaces aug InfoNCE with information-maximization regularizer (VICReg-style spread).
+
+    latent_infonce_jepa_sigreg (single encoder):
+      L_jepa = InfoNCE(predictor(corrupt), encoder(clean).detach(), batch negatives).
+      L_2nd  = λ·MSE(encoder(aug), encoder(clean)) + μ·SIGReg(concat(aug, clean)).
+      LeJEPA-style Gaussian regularizer instead of explicit var/cov.
+
+    latent_distortion_ranking mode (encoder + optional predictor):
+      Ladder: clean -> 0.9 similarity -> 0.5 transparency -> hard mask (shared patches).
+      L_rank on encoder distances; optional InfoNCE(predictor(hard), clean) + InfoNCE(encoder(aug), clean).
+
     jepa_ema mode (default):
       anchor   = predictor(encoder(corrupt))
       positive = target_encoder(clean).detach()
     """
     model.train()
-    totals: dict[str, float] = {"loss": 0.0, "jepa": 0.0}
+    use_distortion_ranking = cfg.training_mode == "latent_distortion_ranking"
+    totals: dict[str, float] = {"loss": 0.0}
+    if not use_distortion_ranking:
+        totals["jepa"] = 0.0
     if cfg.triplet_weight > 0:
         totals["triplet"] = 0.0
     use_vicreg = (
@@ -212,6 +275,18 @@ def train_one_epoch(
     use_proto = cfg.proto_weight > 0
     use_triplet_uniformity = cfg.training_mode == "latent_triplet_uniformity"
     use_jepa_augment = cfg.training_mode == "latent_jepa_augment_uniformity"
+    use_infonce_jepa_augment = cfg.training_mode == "latent_infonce_jepa_augment"
+    use_infonce_jepa_vicreg = cfg.training_mode in {
+        "latent_infonce_jepa_vicreg",
+        "latent_infonce_jepa_mse_var_cov",
+    }
+    use_infonce_jepa_sigreg = cfg.training_mode == "latent_infonce_jepa_sigreg"
+    use_dual_view = (
+        use_jepa_augment
+        or use_infonce_jepa_augment
+        or use_infonce_jepa_vicreg
+        or use_infonce_jepa_sigreg
+    )
     use_sphere = use_uniformity or use_proto or use_triplet_uniformity
     if use_vicreg:
         totals["vicreg_inv"] = 0.0
@@ -220,9 +295,9 @@ def train_one_epoch(
     if use_sigreg:
         totals["sigreg_inv"] = 0.0
         totals["sigreg"] = 0.0
-    if use_uniformity or use_triplet_uniformity or use_jepa_augment:
+    if use_uniformity or use_triplet_uniformity or use_dual_view:
         totals["align"] = 0.0
-    if use_uniformity or use_jepa_augment:
+    if use_uniformity or use_jepa_augment or use_infonce_jepa_augment or use_infonce_jepa_vicreg or use_infonce_jepa_sigreg:
         totals["uniformity"] = 0.0
     elif use_proto:
         totals["align"] = 0.0
@@ -230,26 +305,67 @@ def train_one_epoch(
         totals["triplet"] = 0.0
     if use_jepa_augment:
         totals["aug_align"] = 0.0
+    if use_infonce_jepa_augment:
+        totals["jepa_infonce"] = 0.0
+        totals["aug_infonce"] = 0.0
+        totals["aug_align"] = 0.0
+    if use_infonce_jepa_vicreg:
+        totals["jepa_infonce"] = 0.0
+        totals["vicreg_inv"] = 0.0
+        totals["vicreg_var"] = 0.0
+        totals["vicreg_cov"] = 0.0
+        totals["aug_align"] = 0.0
+        totals["align"] = 0.0
+    if use_infonce_jepa_sigreg:
+        totals["jepa_infonce"] = 0.0
+        totals["sigreg_inv"] = 0.0
+        totals["sigreg"] = 0.0
+        totals["aug_align"] = 0.0
+        totals["align"] = 0.0
+    if use_distortion_ranking:
+        totals["rank"] = 0.0
+        totals["rank_violation"] = 0.0
+        for i in range(1, 4):
+            totals[f"rank_d{i}"] = 0.0
+        if cfg.jepa_infonce_weight > 0:
+            totals["jepa_infonce"] = 0.0
+        if cfg.aug_infonce_weight > 0:
+            totals["aug_infonce"] = 0.0
+        if cfg.align_weight > 0 or cfg.jepa_infonce_weight > 0:
+            totals["align"] = 0.0
+        if cfg.aug_align_weight > 0 or cfg.aug_infonce_weight > 0:
+            totals["aug_align"] = 0.0
     if use_proto:
         totals["swav"] = 0.0
+    if teacher_bank is not None and teacher_weight > 0:
+        totals["teacher_align"] = 0.0
     n = 0
     progress = corrupt_progress(epoch, cfg.epochs)
 
-    for batch_idx, (images, labels) in enumerate(loader):
+    for batch_idx, batch in enumerate(loader):
+        if teacher_bank is not None:
+            images, labels, sample_idx = batch
+            sample_idx = sample_idx.to(device, non_blocking=True)
+        else:
+            images, labels = batch
+            sample_idx = None
+
         images = images.to(device, non_blocking=True)
         labels = labels.to(device, non_blocking=True)
 
-        # Context view: corrupted image (mask and/or blur). Target view: clean augmentation.
-        corrupt = make_corrupt_view(
-            images,
-            schedule=cfg.corrupt_schedule,
-            progress=progress,
-            mask_ratio=cfg.mask_ratio,
-            patch_blur_ratio_min=cfg.patch_blur_ratio_min,
-            blur_sigma_min=cfg.blur_sigma_min,
-            blur_sigma_max=cfg.blur_sigma_max,
-            min_block=cfg.patch_size,
-        )
+        corrupt = None
+        if not use_distortion_ranking:
+            # Context view: corrupted image (mask and/or blur). Target view: clean augmentation.
+            corrupt = make_corrupt_view(
+                images,
+                schedule=cfg.corrupt_schedule,
+                progress=progress,
+                mask_ratio=cfg.mask_ratio,
+                patch_blur_ratio_min=cfg.patch_blur_ratio_min,
+                blur_sigma_min=cfg.blur_sigma_min,
+                blur_sigma_max=cfg.blur_sigma_max,
+                min_block=cfg.patch_size,
+            )
 
         z_neg = None
         z_neg_extra = None
@@ -263,9 +379,43 @@ def train_one_epoch(
         prototypes = None
         z_proto_a = None
         z_proto_b = None
+        z_clean_for_teacher = None
+        z_rank_levels = None
         global_step = (epoch - 1) * steps_per_epoch + batch_idx
 
-        if use_jepa_augment:
+        if use_distortion_ranking:
+            ladder = distortion_ladder(
+                images,
+                mask_ratio=cfg.mask_ratio,
+                patch_size=cfg.patch_size,
+                similarity=cfg.rank_similarity,
+                transparency=cfg.rank_transparency,
+            )
+            b, k, c, h, w = ladder.shape
+            z_ladder = model.encoder(ladder.view(b * k, c, h, w)).view(b, k, -1)
+            z_anchor = z_ladder[:, 0]
+            z_rank_levels = z_ladder[:, 1:]
+            z_pos = z_anchor.detach()
+            z_inv_a = None
+            z_inv_b = None
+            z_enc_aug = None
+            use_rank_jepa = cfg.jepa_infonce_weight > 0 or cfg.align_weight > 0
+            use_rank_aug = cfg.aug_infonce_weight > 0 or cfg.aug_align_weight > 0
+            if use_rank_jepa:
+                z_inv_a = model.predictor(z_ladder[:, 3])
+                z_inv_b = z_anchor.detach()
+            if use_rank_aug:
+                augmented = make_augmented_view(
+                    images,
+                    brightness=cfg.aug_brightness,
+                    contrast=cfg.aug_contrast,
+                    saturation=cfg.aug_saturation,
+                    hue=cfg.aug_hue,
+                )
+                z_enc_aug = model.encoder(augmented)
+                if z_inv_b is None:
+                    z_inv_b = z_anchor.detach()
+        elif use_dual_view:
             augmented = make_augmented_view(
                 images,
                 brightness=cfg.aug_brightness,
@@ -274,16 +424,24 @@ def train_one_epoch(
                 hue=cfg.aug_hue,
             )
             z_clean_enc = model.encoder(images)
+            z_clean_for_teacher = z_clean_enc
             z_aug_enc = model.encoder(augmented)
             z_corrupt_enc = model.encoder(corrupt)
             z_inv_a = model.predictor(z_corrupt_enc)
             z_inv_b = z_clean_enc.detach()
             z_enc_aug = z_aug_enc
             z_anchor, z_pos = z_inv_a, z_inv_b
+            if use_infonce_jepa_vicreg:
+                z_vicreg_a = z_aug_enc
+                z_vicreg_b = z_clean_enc
+            elif use_infonce_jepa_sigreg:
+                z_vicreg_a = z_aug_enc
+                z_vicreg_b = z_clean_enc
+                z_sigreg = torch.cat([z_aug_enc, z_clean_enc], dim=0)
             # Uniformity on clean only — concat(clean, aug) fights aug_align by spreading pairs apart.
             z_uniformity = z_clean_enc
 
-            if cfg.triplet_weight > 0:
+            if use_jepa_augment and cfg.triplet_weight > 0:
                 z_ref = z_clean_enc.detach()
                 if cfg.negative_mode == "scramble":
                     neg_view = scramble_patches(augmented, patch_size=cfg.scramble_patch_size)
@@ -359,8 +517,20 @@ def train_one_epoch(
             prototypes,
             z_proto_a,
             z_proto_b,
+            z_rank_levels,
             global_step,
         )
+        if teacher_bank is not None and teacher_weight > 0 and sample_idx is not None:
+            if z_clean_for_teacher is None:
+                z_clean_for_teacher = model.encoder(images)
+            phi = teacher_bank.lookup(sample_idx)
+            l_teacher = teacher_weighted_align_loss(
+                z_clean_for_teacher,
+                phi,
+                cfg.teacher_align_temperature,
+            )
+            loss = loss + teacher_weight * l_teacher
+            stats["teacher_align"] = l_teacher.item()
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
         optimizer.step()
@@ -422,6 +592,14 @@ def _checkpoint_config_keys() -> tuple[str, ...]:
 def validate_resume_config(cfg: TrainConfig, saved_cfg: dict) -> None:
     mismatches = []
     for key in _checkpoint_config_keys():
+        if key == "epochs":
+            saved_epochs = saved_cfg.get("epochs")
+            if saved_epochs is not None and cfg.epochs < saved_epochs:
+                mismatches.append(
+                    f"epochs: checkpoint={saved_epochs!r} config={cfg.epochs!r} "
+                    "(target must be >= checkpoint training budget)"
+                )
+            continue
         if saved_cfg.get(key) != getattr(cfg, key):
             mismatches.append(f"{key}: checkpoint={saved_cfg.get(key)!r} config={getattr(cfg, key)!r}")
     if mismatches:
@@ -478,6 +656,7 @@ def run_training(cfg: TrainConfig) -> dict:
     start_epoch = 1
     history: list[dict] = []
     elapsed_before = 0.0
+    extend_epochs = False
 
     if resume_path is not None:
         ckpt = load_training_checkpoint(resume_path, device)
@@ -485,11 +664,19 @@ def run_training(cfg: TrainConfig) -> dict:
         start_epoch = int(ckpt["epoch"]) + 1
         history = list(ckpt.get("history", []))
         elapsed_before = float(ckpt.get("elapsed_sec", 0.0))
+        saved_epochs = int(ckpt["config"].get("epochs", cfg.epochs))
+        extend_epochs = cfg.epochs > saved_epochs
         if start_epoch > cfg.epochs:
             raise ValueError(
                 f"Checkpoint epoch {ckpt['epoch']} >= target epochs {cfg.epochs}; nothing to resume"
             )
-        print(f"Resuming from {resume_path} at epoch {start_epoch}/{cfg.epochs}")
+        if extend_epochs:
+            print(
+                f"Resuming from {resume_path} at epoch {start_epoch}/{cfg.epochs} "
+                f"(extended from {saved_epochs} epochs; fresh cosine LR for remaining steps)"
+            )
+        else:
+            print(f"Resuming from {resume_path} at epoch {start_epoch}/{cfg.epochs}")
     else:
         set_seed(cfg.seed)
 
@@ -503,11 +690,18 @@ def run_training(cfg: TrainConfig) -> dict:
         f"triplet_weight={cfg.triplet_weight} | "
         f"align_weight={cfg.align_weight} | "
         f"aug_align_weight={cfg.aug_align_weight} | "
+        f"jepa_infonce_weight={cfg.jepa_infonce_weight} | "
+        f"aug_infonce_weight={cfg.aug_infonce_weight} | "
+        f"infonce_temperature={cfg.infonce_temperature} | "
+        f"rank_weight={cfg.rank_weight} | "
+        f"rank_similarity={cfg.rank_similarity} | "
+        f"rank_transparency={cfg.rank_transparency} | "
         f"margin={cfg.margin} | "
         f"vicreg_inv_weight={cfg.vicreg_inv_weight} | "
         f"vicreg_var_weight={cfg.vicreg_var_weight} | "
         f"vicreg_cov_weight={cfg.vicreg_cov_weight} | "
         f"sigreg_weight={cfg.sigreg_weight} | "
+        f"sigreg_inv_weight={cfg.sigreg_inv_weight} | "
         f"sigreg_num_slices={cfg.sigreg_num_slices} | "
         f"uniformity_weight={cfg.uniformity_weight} | "
         f"uniformity_t={cfg.uniformity_t} | "
@@ -529,7 +723,19 @@ def run_training(cfg: TrainConfig) -> dict:
         cfg.num_workers,
         cfg.train_subset,
         download=cfg.download,
+        return_index=cfg.teacher_features_path is not None,
     )
+
+    teacher_bank: TeacherFeatureBank | None = None
+    if cfg.teacher_features_path:
+        teacher_bank = TeacherFeatureBank(cfg.teacher_features_path, device=torch.device("cpu"))
+        if teacher_bank.meta.get("dataset") not in (None, cfg.dataset):
+            raise ValueError(
+                f"Teacher features dataset={teacher_bank.meta.get('dataset')!r} "
+                f"!= config dataset={cfg.dataset!r}"
+            )
+        print(f"teacher bank: {teacher_bank.describe()} | align_weight={cfg.teacher_align_weight} | "
+              f"anneal epochs {cfg.teacher_anneal_start_epoch}-{cfg.teacher_anneal_end_epoch}")
 
     model = TripletJEPA(
         in_channels=spec.in_channels,
@@ -548,7 +754,13 @@ def run_training(cfg: TrainConfig) -> dict:
     print(f"params encoder={params['encoder']} predictor={params['predictor']} total={params['total_trainable']}")
 
     train_params = list(model.encoder.parameters())
-    if cfg.anchor_mode == "predictor_corrupt":
+    use_rank_jepa = (
+        cfg.training_mode == "latent_distortion_ranking"
+        and (cfg.jepa_infonce_weight > 0 or cfg.align_weight > 0)
+    )
+    if cfg.anchor_mode == "predictor_corrupt" and cfg.training_mode != "latent_distortion_ranking":
+        train_params += list(model.predictor.parameters())
+    elif use_rank_jepa:
         train_params += list(model.predictor.parameters())
     if model.prototype_bank is not None:
         train_params += list(model.prototype_bank.parameters())
@@ -557,7 +769,11 @@ def run_training(cfg: TrainConfig) -> dict:
         lr=cfg.lr,
         weight_decay=cfg.weight_decay,
     )
-    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=cfg.epochs)
+    remaining_epochs = cfg.epochs - (start_epoch - 1) if ckpt is not None else cfg.epochs
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(
+        optimizer,
+        T_max=remaining_epochs if extend_epochs else cfg.epochs,
+    )
     criterion = TripletJEPALoss(
         margin=cfg.margin,
         triplet_weight=cfg.triplet_weight,
@@ -565,6 +781,7 @@ def run_training(cfg: TrainConfig) -> dict:
         vicreg_var_weight=cfg.vicreg_var_weight,
         vicreg_cov_weight=cfg.vicreg_cov_weight,
         sigreg_weight=cfg.sigreg_weight,
+        sigreg_inv_weight=cfg.sigreg_inv_weight,
         sigreg_num_slices=cfg.sigreg_num_slices,
         uniformity_weight=cfg.uniformity_weight,
         uniformity_t=cfg.uniformity_t,
@@ -577,14 +794,28 @@ def run_training(cfg: TrainConfig) -> dict:
         jepa_augment_triplet_uniformity=(
             cfg.training_mode == "latent_jepa_augment_uniformity"
         ),
+        jepa_infonce_augment=(cfg.training_mode == "latent_infonce_jepa_augment"),
+        jepa_infonce_vicreg=(
+            cfg.training_mode in {"latent_infonce_jepa_vicreg", "latent_infonce_jepa_mse_var_cov"}
+        ),
+        jepa_infonce_sigreg=(cfg.training_mode == "latent_infonce_jepa_sigreg"),
+        distortion_ranking=(cfg.training_mode == "latent_distortion_ranking"),
+        rank_weight=cfg.rank_weight,
         aug_align_weight=cfg.aug_align_weight,
         align_weight=cfg.align_weight,
+        jepa_infonce_weight=cfg.jepa_infonce_weight,
+        aug_infonce_weight=cfg.aug_infonce_weight,
+        infonce_temperature=cfg.infonce_temperature,
     )
 
     if ckpt is not None:
         model.load_state_dict(ckpt["model"])
         optimizer.load_state_dict(ckpt["optimizer"])
-        scheduler.load_state_dict(ckpt["scheduler"])
+        if not extend_epochs:
+            scheduler.load_state_dict(ckpt["scheduler"])
+        else:
+            for group in optimizer.param_groups:
+                group["lr"] = cfg.lr
 
     best_knn, best_epoch = best_knn_from_history(history)
 
@@ -599,9 +830,22 @@ def run_training(cfg: TrainConfig) -> dict:
     use_proto = cfg.proto_weight > 0
     use_triplet_uniformity = cfg.training_mode == "latent_triplet_uniformity"
     use_jepa_augment = cfg.training_mode == "latent_jepa_augment_uniformity"
+    use_infonce_jepa_augment = cfg.training_mode == "latent_infonce_jepa_augment"
+    use_infonce_jepa_vicreg = cfg.training_mode in {
+        "latent_infonce_jepa_vicreg",
+        "latent_infonce_jepa_mse_var_cov",
+    }
+    use_infonce_jepa_sigreg = cfg.training_mode == "latent_infonce_jepa_sigreg"
+    use_distortion_ranking = cfg.training_mode == "latent_distortion_ranking"
     steps_per_epoch = len(train_loader)
 
     for epoch in range(start_epoch, cfg.epochs + 1):
+        teacher_w = teacher_weight_at_epoch(
+            epoch,
+            cfg.teacher_align_weight,
+            cfg.teacher_anneal_start_epoch,
+            cfg.teacher_anneal_end_epoch,
+        )
         train_stats, progress = train_one_epoch(
             model,
             train_loader,
@@ -612,9 +856,11 @@ def run_training(cfg: TrainConfig) -> dict:
             cfg,
             epoch,
             steps_per_epoch,
+            teacher_bank,
+            teacher_w,
         )
         scheduler.step()
-        row: dict = {"epoch": epoch, **train_stats, "lr": scheduler.get_last_lr()[0]}
+        row: dict = {"epoch": epoch, **train_stats, "lr": scheduler.get_last_lr()[0], "teacher_w": teacher_w}
         if cfg.corrupt_schedule in {"blur_to_mask", "mask_curriculum", "block_curriculum"}:
             row["corrupt_progress"] = progress
             row["active_mask_ratio"] = active_patch_blur_ratio(
@@ -644,6 +890,60 @@ def run_training(cfg: TrainConfig) -> dict:
         if cfg.triplet_weight > 0 and not use_triplet_uniformity and not use_jepa_augment:
             parts.append(f"jepa {row['jepa']:.4f}")
             parts.append(f"triplet {row['triplet']:.4f}")
+        elif use_infonce_jepa_sigreg:
+            if "jepa_infonce" in row:
+                parts.append(f"jepa_nce {row['jepa_infonce']:.4f}")
+            if "sigreg_inv" in row:
+                parts.append(f"inv {row['sigreg_inv']:.4f}")
+            if "sigreg" in row:
+                parts.append(f"sigreg {row['sigreg']:.4f}")
+            if "teacher_align" in row:
+                parts.append(f"teacher {row['teacher_align']:.4f}")
+            if "teacher_w" in row and row["teacher_w"] > 0:
+                parts.append(f"teacher_w {row['teacher_w']:.3f}")
+            if "align" in row:
+                parts.append(f"align(log) {row['align']:.4f}")
+            if "aug_align" in row:
+                parts.append(f"aug_align(log) {row['aug_align']:.4f}")
+            if "uniformity" in row:
+                parts.append(f"unif {row['uniformity']:.4f}")
+            parts.append(f"jepa(log) {row['jepa']:.4f}")
+        elif use_infonce_jepa_vicreg:
+            if "jepa_infonce" in row:
+                parts.append(f"jepa_nce {row['jepa_infonce']:.4f}")
+            if "vicreg_inv" in row:
+                parts.append(f"inv {row['vicreg_inv']:.4f}")
+            if "vicreg_var" in row:
+                parts.append(f"var {row['vicreg_var']:.4f}")
+            if "vicreg_cov" in row:
+                parts.append(f"cov {row['vicreg_cov']:.4f}")
+            if "teacher_align" in row:
+                parts.append(f"teacher {row['teacher_align']:.4f}")
+            if "teacher_w" in row and row["teacher_w"] > 0:
+                parts.append(f"teacher_w {row['teacher_w']:.3f}")
+            if "align" in row:
+                parts.append(f"align(log) {row['align']:.4f}")
+            if "aug_align" in row:
+                parts.append(f"aug_align(log) {row['aug_align']:.4f}")
+            if "uniformity" in row:
+                parts.append(f"unif {row['uniformity']:.4f}")
+            parts.append(f"jepa(log) {row['jepa']:.4f}")
+        elif use_infonce_jepa_augment:
+            if "jepa_infonce" in row:
+                parts.append(f"jepa_nce {row['jepa_infonce']:.4f}")
+            if "aug_infonce" in row:
+                parts.append(f"aug_nce {row['aug_infonce']:.4f}")
+            if "teacher_align" in row:
+                parts.append(f"teacher {row['teacher_align']:.4f}")
+            if "teacher_w" in row and row["teacher_w"] > 0:
+                parts.append(f"teacher_w {row['teacher_w']:.3f}")
+            if "align" in row:
+                parts.append(f"align(log) {row['align']:.4f}")
+            if "aug_align" in row:
+                parts.append(f"aug_align(log) {row['aug_align']:.4f}")
+            if "uniformity" in row:
+                parts.append(f"unif {row['uniformity']:.4f}")
+            parts.append(f"jepa(log) {row['jepa']:.4f}")
         elif use_triplet_uniformity or use_jepa_augment or use_uniformity or use_proto:
             if "align" in row:
                 parts.append(f"align {row['align']:.4f}")
@@ -670,6 +970,19 @@ def run_training(cfg: TrainConfig) -> dict:
             if "vicreg_cov" in row:
                 parts.append(f"cov {row['vicreg_cov']:.4f}")
             parts.append(f"jepa(log) {row['jepa']:.4f}")
+        elif use_distortion_ranking:
+            if "rank" in row:
+                parts.append(f"rank {row['rank']:.4f}")
+            if "jepa_infonce" in row:
+                parts.append(f"jepa_nce {row['jepa_infonce']:.4f}")
+            if "aug_infonce" in row:
+                parts.append(f"aug_nce {row['aug_infonce']:.4f}")
+            if "rank_violation" in row:
+                parts.append(f"viol {row['rank_violation']:.4f}")
+            for i in range(1, 4):
+                key = f"rank_d{i}"
+                if key in row:
+                    parts.append(f"d{i} {row[key]:.4f}")
         else:
             parts.append(f"jepa {row['jepa']:.4f}")
             parts.append("triplet n/a")
@@ -730,6 +1043,7 @@ def run_training(cfg: TrainConfig) -> dict:
         "vicreg_var_weight": cfg.vicreg_var_weight,
         "vicreg_cov_weight": cfg.vicreg_cov_weight,
         "sigreg_weight": cfg.sigreg_weight,
+        "sigreg_inv_weight": cfg.sigreg_inv_weight,
         "sigreg_num_slices": cfg.sigreg_num_slices,
         "uniformity_weight": cfg.uniformity_weight,
         "uniformity_t": cfg.uniformity_t,

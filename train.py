@@ -22,11 +22,16 @@ def main() -> None:
     parser.add_argument("--triplet-weight", type=float)
     parser.add_argument("--align-weight", type=float, help="JEPA align weight (0 = disable)")
     parser.add_argument("--aug-align-weight", type=float, help="Encoder aug vs clean cosine weight")
+    parser.add_argument("--jepa-infonce-weight", type=float, help="InfoNCE weight on predictor(mask) vs clean")
+    parser.add_argument("--aug-infonce-weight", type=float, help="InfoNCE weight on encoder(aug) vs clean")
+    parser.add_argument("--infonce-temperature", type=float, help="Softmax temperature for InfoNCE")
+    parser.add_argument("--teacher-features-path", type=str, help="Precomputed .pt from extract_teacher_features.py")
+    parser.add_argument("--teacher-align-weight", type=float, help="Weight for teacher-guided batch alignment")
     parser.add_argument(
         "--backbone",
         type=str,
-        choices=["resnet", "vit"],
-        help="Encoder backbone: resnet (CNN) or vit (small ViT)",
+        choices=["resnet", "resnet50", "vit"],
+        help="Encoder backbone: resnet (SmallResNet), resnet50 (CIFAR-adapted), or vit",
     )
     parser.add_argument("--vit-depth", type=int)
     parser.add_argument("--vit-heads", type=int)
@@ -40,7 +45,7 @@ def main() -> None:
     parser.add_argument(
         "--training-mode",
         type=str,
-        choices=["jepa_ema", "latent_triplet", "latent_vicreg", "latent_sigreg", "latent_uniformity", "latent_triplet_uniformity", "latent_jepa_augment_uniformity"],
+        choices=["jepa_ema", "latent_triplet", "latent_vicreg", "latent_sigreg", "latent_uniformity", "latent_triplet_uniformity", "latent_jepa_augment_uniformity", "latent_infonce_jepa_augment", "latent_infonce_jepa_vicreg", "latent_infonce_jepa_mse_var_cov", "latent_infonce_jepa_sigreg", "latent_distortion_ranking"],
     )
     parser.add_argument("--use-ema-target", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument(
@@ -49,6 +54,11 @@ def main() -> None:
         choices=["predictor_corrupt", "encoder_corrupt", "encoder_clean"],
     )
     parser.add_argument("--output-dir", type=str, default="./results")
+    parser.add_argument(
+        "--device",
+        type=str,
+        help="Training device: auto, cpu, cuda, cuda:0, cuda:1, ...",
+    )
     parser.add_argument("--train-subset", type=int, help="Use first N train samples (debug)")
     parser.add_argument(
         "--download",
@@ -79,6 +89,16 @@ def main() -> None:
         cfg.align_weight = args.align_weight
     if args.aug_align_weight is not None:
         cfg.aug_align_weight = args.aug_align_weight
+    if args.jepa_infonce_weight is not None:
+        cfg.jepa_infonce_weight = args.jepa_infonce_weight
+    if args.aug_infonce_weight is not None:
+        cfg.aug_infonce_weight = args.aug_infonce_weight
+    if args.infonce_temperature is not None:
+        cfg.infonce_temperature = args.infonce_temperature
+    if args.teacher_features_path:
+        cfg.teacher_features_path = args.teacher_features_path
+    if args.teacher_align_weight is not None:
+        cfg.teacher_align_weight = args.teacher_align_weight
     if args.backbone:
         cfg.backbone = args.backbone
     if args.vit_depth is not None:
@@ -99,6 +119,8 @@ def main() -> None:
         cfg.anchor_mode = args.anchor_mode
     if args.output_dir:
         cfg.output_dir = args.output_dir
+    if args.device:
+        cfg.device = args.device
     if args.train_subset is not None:
         cfg.train_subset = args.train_subset
     if args.download:

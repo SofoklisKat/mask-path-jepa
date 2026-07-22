@@ -43,6 +43,41 @@ def triplet_cosine_loss(
     return F.relu(d_pos - d_neg + margin).mean()
 
 
+def cosine_distance_from_anchor(anchor: torch.Tensor, views: torch.Tensor) -> torch.Tensor:
+    """Cosine distance 1 - cos between anchor (B, D) and views (B, L, D)."""
+    anchor_n = F.normalize(anchor, dim=-1)
+    views_n = F.normalize(views, dim=-1)
+    return 1.0 - (views_n * anchor_n.unsqueeze(1)).sum(dim=-1)
+
+
+def ranking_cosine_loss(
+    anchor: torch.Tensor,
+    levels: torch.Tensor,
+    margin: float = 0.05,
+) -> tuple[torch.Tensor, dict[str, float]]:
+    """Penalize violations of d(anchor, level_i) < d(anchor, level_{i+1}).
+
+    ``levels`` are increasingly severe corrupt views only (not clean).
+    """
+    dist = cosine_distance_from_anchor(anchor, levels)
+    loss = torch.tensor(0.0, device=anchor.device)
+    n_pairs = dist.size(1) - 1
+    for i in range(n_pairs):
+        loss = loss + F.relu(dist[:, i] - dist[:, i + 1] + margin).mean()
+    # Mild corruption should sit at least ``margin`` away from clean (dist=0).
+    loss = loss + F.relu(margin - dist[:, 0]).mean()
+
+    stats: dict[str, float] = {"rank": loss.item()}
+    with torch.no_grad():
+        mean_dist = dist.mean(dim=0)
+        for i, d in enumerate(mean_dist.tolist()):
+            stats[f"rank_d{i + 1}"] = d
+        if n_pairs > 0:
+            violations = (dist[:, :-1] - dist[:, 1:] + margin).clamp(min=0.0)
+            stats["rank_violation"] = violations.mean().item()
+    return loss, stats
+
+
 def vicreg_invariance(z_a: torch.Tensor, z_b: torch.Tensor) -> torch.Tensor:
     """MSE between two views (VICReg alignment / invariance term)."""
     return F.mse_loss(z_a, z_b)
@@ -70,6 +105,23 @@ def uniformity_loss(z: torch.Tensor, t: float = 2.0) -> torch.Tensor:
     sq_dist = torch.cdist(z, z, p=2).pow(2)
     mask = ~torch.eye(z.size(0), dtype=torch.bool, device=z.device)
     return torch.log(torch.exp(-t * sq_dist[mask]).mean() + 1e-8)
+
+
+def infonce_loss(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    temperature: float = 0.1,
+) -> torch.Tensor:
+    """SimCLR-style InfoNCE on the unit sphere.
+
+    query[i] should match key[i]; all other keys in the batch are negatives.
+    Pass key stop-grad (encoder(clean).detach()) for stable JEPA-style training.
+    """
+    query = F.normalize(query, dim=-1)
+    key = F.normalize(key, dim=-1)
+    logits = query @ key.T / temperature
+    labels = torch.arange(query.size(0), device=query.device)
+    return F.cross_entropy(logits, labels)
 
 
 @torch.no_grad()
@@ -166,8 +218,17 @@ class TripletJEPALoss:
     sinkhorn_eps: float = 0.05
     triplet_cosine: bool = False
     jepa_augment_triplet_uniformity: bool = False
+    jepa_infonce_augment: bool = False
+    jepa_infonce_vicreg: bool = False
+    jepa_infonce_sigreg: bool = False
+    sigreg_inv_weight: float = 0.0
+    distortion_ranking: bool = False
+    rank_weight: float = 1.0
     aug_align_weight: float = 0.0
     align_weight: float = 1.0
+    jepa_infonce_weight: float = 1.0
+    aug_infonce_weight: float = 1.0
+    infonce_temperature: float = 0.1
 
     def __call__(
         self,
@@ -185,10 +246,37 @@ class TripletJEPALoss:
         prototypes: torch.Tensor | None = None,
         z_proto_a: torch.Tensor | None = None,
         z_proto_b: torch.Tensor | None = None,
+        z_rank_levels: torch.Tensor | None = None,
         global_step: int = 0,
     ) -> tuple[torch.Tensor, dict[str, float]]:
+        stats: dict[str, float] = {}
+        if self.distortion_ranking:
+            if z_rank_levels is None:
+                raise ValueError("z_rank_levels is required for distortion_ranking")
+            l_rank, rank_stats = ranking_cosine_loss(z_anchor, z_rank_levels, margin=self.margin)
+            total = self.rank_weight * l_rank
+            stats.update(rank_stats)
+            if z_inv_a is not None and z_inv_b is not None:
+                stats["align"] = jepa_cosine_loss(z_inv_a, z_inv_b).item()
+                if self.jepa_infonce_weight > 0:
+                    l_jepa_nce = infonce_loss(z_inv_a, z_inv_b, self.infonce_temperature)
+                    total = total + self.jepa_infonce_weight * l_jepa_nce
+                    stats["jepa_infonce"] = l_jepa_nce.item()
+                if self.align_weight > 0:
+                    total = total + self.align_weight * jepa_cosine_loss(z_inv_a, z_inv_b)
+            if z_enc_aug is not None and z_inv_b is not None:
+                stats["aug_align"] = jepa_cosine_loss(z_enc_aug, z_inv_b).item()
+                if self.aug_infonce_weight > 0:
+                    l_aug_nce = infonce_loss(z_enc_aug, z_inv_b, self.infonce_temperature)
+                    total = total + self.aug_infonce_weight * l_aug_nce
+                    stats["aug_infonce"] = l_aug_nce.item()
+                if self.aug_align_weight > 0:
+                    total = total + self.aug_align_weight * jepa_cosine_loss(z_enc_aug, z_inv_b)
+            stats["loss"] = total.item()
+            return total, stats
+
         l_jepa = jepa_cosine_loss(z_anchor, z_positive)
-        stats: dict[str, float] = {"jepa": l_jepa.item()}
+        stats = {"jepa": l_jepa.item()}
         use_vicreg = (
             self.vicreg_inv_weight > 0
             or self.vicreg_var_weight > 0
@@ -198,7 +286,7 @@ class TripletJEPALoss:
         use_uniformity = self.uniformity_weight > 0
         use_proto = self.proto_weight > 0
 
-        if use_sigreg:
+        if use_sigreg and not self.jepa_infonce_sigreg:
             if z_inv_a is None or z_inv_b is None or z_sigreg is None:
                 raise ValueError("z_inv_a, z_inv_b, and z_sigreg are required for SIGReg")
             l_inv = vicreg_invariance(z_inv_a, z_inv_b)
@@ -207,6 +295,101 @@ class TripletJEPALoss:
             total = (1.0 - lam) * l_inv + lam * l_sig
             stats["sigreg_inv"] = l_inv.item()
             stats["sigreg"] = l_sig.item()
+        elif self.jepa_infonce_sigreg:
+            if z_inv_a is None or z_inv_b is None:
+                raise ValueError("z_inv_a and z_inv_b are required for jepa_infonce_sigreg")
+            if z_vicreg_a is None or z_vicreg_b is None or z_sigreg is None:
+                raise ValueError(
+                    "z_vicreg_a, z_vicreg_b, and z_sigreg are required for jepa_infonce_sigreg"
+                )
+            total = torch.tensor(0.0, device=z_inv_a.device)
+            stats["align"] = jepa_cosine_loss(z_inv_a, z_inv_b).item()
+            if z_enc_aug is not None:
+                stats["aug_align"] = jepa_cosine_loss(z_enc_aug, z_inv_b).item()
+            if self.jepa_infonce_weight > 0:
+                l_jepa_nce = infonce_loss(z_inv_a, z_inv_b, self.infonce_temperature)
+                total = total + self.jepa_infonce_weight * l_jepa_nce
+                stats["jepa_infonce"] = l_jepa_nce.item()
+            if self.sigreg_inv_weight > 0:
+                l_inv = vicreg_invariance(z_vicreg_a, z_vicreg_b)
+                total = total + self.sigreg_inv_weight * l_inv
+                stats["sigreg_inv"] = l_inv.item()
+            if self.sigreg_weight > 0:
+                l_sig = sigreg_loss(z_sigreg, global_step, self.sigreg_num_slices)
+                total = total + self.sigreg_weight * l_sig
+                stats["sigreg"] = l_sig.item()
+            if self.align_weight > 0:
+                total = total + self.align_weight * jepa_cosine_loss(z_inv_a, z_inv_b)
+            if self.aug_align_weight > 0 and z_enc_aug is not None:
+                total = total + self.aug_align_weight * jepa_cosine_loss(z_enc_aug, z_inv_b)
+            if use_uniformity:
+                if z_uniformity is None:
+                    raise ValueError("z_uniformity is required when uniformity_weight > 0")
+                l_unif = uniformity_loss(z_uniformity, self.uniformity_t)
+                total = total + self.uniformity_weight * l_unif
+                stats["uniformity"] = l_unif.item()
+        elif self.jepa_infonce_vicreg:
+            if z_inv_a is None or z_inv_b is None:
+                raise ValueError("z_inv_a and z_inv_b are required for jepa_infonce_vicreg")
+            if z_vicreg_a is None or z_vicreg_b is None:
+                raise ValueError("z_vicreg_a and z_vicreg_b are required for jepa_infonce_vicreg")
+            total = torch.tensor(0.0, device=z_inv_a.device)
+            stats["align"] = jepa_cosine_loss(z_inv_a, z_inv_b).item()
+            if z_enc_aug is not None:
+                stats["aug_align"] = jepa_cosine_loss(z_enc_aug, z_inv_b).item()
+            if self.jepa_infonce_weight > 0:
+                l_jepa_nce = infonce_loss(z_inv_a, z_inv_b, self.infonce_temperature)
+                total = total + self.jepa_infonce_weight * l_jepa_nce
+                stats["jepa_infonce"] = l_jepa_nce.item()
+            if self.vicreg_inv_weight > 0:
+                l_inv = vicreg_invariance(z_vicreg_a, z_vicreg_b)
+                total = total + self.vicreg_inv_weight * l_inv
+                stats["vicreg_inv"] = l_inv.item()
+            if self.vicreg_var_weight > 0:
+                l_var = vicreg_variance(z_vicreg_a) + vicreg_variance(z_vicreg_b)
+                total = total + self.vicreg_var_weight * l_var
+                stats["vicreg_var"] = l_var.item()
+            if self.vicreg_cov_weight > 0:
+                l_cov = vicreg_covariance(z_vicreg_a) + vicreg_covariance(z_vicreg_b)
+                total = total + self.vicreg_cov_weight * l_cov
+                stats["vicreg_cov"] = l_cov.item()
+            if self.align_weight > 0:
+                total = total + self.align_weight * jepa_cosine_loss(z_inv_a, z_inv_b)
+            if self.aug_align_weight > 0 and z_enc_aug is not None:
+                total = total + self.aug_align_weight * jepa_cosine_loss(z_enc_aug, z_inv_b)
+            if use_uniformity:
+                if z_uniformity is None:
+                    raise ValueError("z_uniformity is required when uniformity_weight > 0")
+                l_unif = uniformity_loss(z_uniformity, self.uniformity_t)
+                total = total + self.uniformity_weight * l_unif
+                stats["uniformity"] = l_unif.item()
+        elif self.jepa_infonce_augment:
+            if z_inv_a is None or z_inv_b is None:
+                raise ValueError("z_inv_a and z_inv_b are required for jepa_infonce_augment")
+            total = torch.tensor(0.0, device=z_inv_a.device)
+            stats["align"] = jepa_cosine_loss(z_inv_a, z_inv_b).item()
+            if z_enc_aug is not None:
+                stats["aug_align"] = jepa_cosine_loss(z_enc_aug, z_inv_b).item()
+            if self.jepa_infonce_weight > 0:
+                l_jepa_nce = infonce_loss(z_inv_a, z_inv_b, self.infonce_temperature)
+                total = total + self.jepa_infonce_weight * l_jepa_nce
+                stats["jepa_infonce"] = l_jepa_nce.item()
+            if self.aug_infonce_weight > 0:
+                if z_enc_aug is None:
+                    raise ValueError("z_enc_aug is required when aug_infonce_weight > 0")
+                l_aug_nce = infonce_loss(z_enc_aug, z_inv_b, self.infonce_temperature)
+                total = total + self.aug_infonce_weight * l_aug_nce
+                stats["aug_infonce"] = l_aug_nce.item()
+            if self.align_weight > 0:
+                total = total + self.align_weight * jepa_cosine_loss(z_inv_a, z_inv_b)
+            if self.aug_align_weight > 0 and z_enc_aug is not None:
+                total = total + self.aug_align_weight * jepa_cosine_loss(z_enc_aug, z_inv_b)
+            if use_uniformity:
+                if z_uniformity is None:
+                    raise ValueError("z_uniformity is required when uniformity_weight > 0")
+                l_unif = uniformity_loss(z_uniformity, self.uniformity_t)
+                total = total + self.uniformity_weight * l_unif
+                stats["uniformity"] = l_unif.item()
         elif self.jepa_augment_triplet_uniformity:
             if z_inv_a is None or z_inv_b is None:
                 raise ValueError("z_inv_a and z_inv_b are required for jepa_augment_uniformity")
@@ -304,7 +487,14 @@ class TripletJEPALoss:
         else:
             total = l_jepa
 
-        if self.triplet_weight > 0 and not self.triplet_cosine:
+        if (
+            self.triplet_weight > 0
+            and not self.triplet_cosine
+            and not self.jepa_augment_triplet_uniformity
+            and not self.jepa_infonce_augment
+            and not self.jepa_infonce_vicreg
+            and not self.jepa_infonce_sigreg
+        ):
             if z_negative is None:
                 raise ValueError("z_negative is required when triplet_weight > 0")
             l_triplet = triplet_loss(z_anchor, z_positive, z_negative, margin=self.margin)

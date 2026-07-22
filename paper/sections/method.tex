@@ -1,0 +1,143 @@
+\section{Proposed Method}
+\label{sec:method}
+
+We study \emph{asymmetric} self-supervised objectives for latent-space JEPA:
+instance-level contrastive learning on a masked predictive path, paired with
+information-maximization regularizers on an augmentation path.
+The goal is to retain the strong local geometry of InfoNCE while improving
+global structure for linear classification.
+
+\subsection{Architecture and views}
+\label{sec:architecture}
+
+We use a single online encoder $f_\theta$ and a lightweight predictor
+$g_\phi$ (no EMA teacher).
+Given an image $x$, we construct three views:
+\begin{itemize}
+  \item \textbf{Clean} $\tilde{x}$: standard random crop and horizontal flip.
+  \item \textbf{Corrupt} $x_c$: multi-block masking ($60\%$ of $4{\times}4$ patches
+        zeroed, I-JEPA style~\cite{assran2023ijepa}).
+  \item \textbf{Augmented} $x_a$: color jitter (brightness, contrast, saturation, hue).
+\end{itemize}
+All views are encoded into $d$-dimensional latents ($d{=}256$ in our experiments):
+\[
+  z = f_\theta(\tilde{x}), \quad
+  z_c = f_\theta(x_c), \quad
+  z_a = f_\theta(x_a).
+\]
+The predictor maps the corrupt latent to the clean target space:
+$\hat{z} = g_\phi(z_c)$.
+At evaluation, only $f_\theta(\tilde{x})$ is used; $g_\phi$ is discarded.
+
+\subsection{Dual InfoNCE baseline}
+\label{sec:baseline}
+
+Our starting point replaces cosine JEPA regression with batch-wise InfoNCE
+(SimCLR-style~\cite{chen2020simclr}) on two alignment pairs:
+\begin{align}
+  \mathcal{L}_{\mathrm{jepa}}
+  &= \mathrm{InfoNCE}(\hat{z}, \sg(z); \tau), \\
+  \mathcal{L}_{\mathrm{aug}}
+  &= \mathrm{InfoNCE}(z_a, \sg(z); \tau),
+\end{align}
+where $\sg(\cdot)$ stops gradients on the clean encoder branch and
+$\tau{=}0.1$ is the temperature.
+The total loss is
+$\mathcal{L}_{\mathrm{dual}} =
+ w_j \mathcal{L}_{\mathrm{jepa}} + w_a \mathcal{L}_{\mathrm{aug}}$
+with $w_j = w_a = 1$.
+This setup yields strong k-NN accuracy but weak linear-probe performance,
+consistent with instance-discrimination objectives that emphasize local
+neighborhood structure over globally linearly separable representations.
+
+For one image $i$ in a batch of size $B$, InfoNCE on queries $q_i$ and keys
+$k_j = \sg(z_j)$ is
+\begin{equation}
+  \mathrm{InfoNCE}(q, k; \tau)
+  = -\log \frac{\exp(\cos(q_i, k_i)/\tau)}
+  {\sum_{j=1}^{B} \exp(\cos(q_i, k_j)/\tau)},
+\end{equation}
+with $\cos(\cdot,\cdot)$ the cosine similarity of $\ell_2$-normalized vectors.
+
+\subsection{Asymmetric hybrids}
+\label{sec:hybrid}
+
+We keep $\mathcal{L}_{\mathrm{jepa}}$ on the mask path and \emph{replace}
+$\mathcal{L}_{\mathrm{aug}}$ with explicit spread / invariance terms on
+$(z_a, z)$, yielding two variants that share the same structure but differ in
+the second regularizer.
+
+\paragraph{Shared first term.}
+Both hybrids optimize
+\begin{equation}
+  \mathcal{L}_{\mathrm{mask}}
+  = w_j \,\mathrm{InfoNCE}(\hat{z}, \sg(z); \tau),
+  \qquad w_j = 1.
+\end{equation}
+
+\paragraph{Hybrid A: MSE + variance + covariance.}
+On the augmentation path we apply three decomposed terms (same building blocks
+as VICReg~\cite{bardes2022vicreg}, but applied asymmetrically and \emph{not}
+as a standalone VICReg objective):
+\begin{align}
+  \mathcal{L}_{\mathrm{inv}} &= \| z_a - z \|_2^2, \\
+  \mathcal{L}_{\mathrm{var}} &= \sum_{v \in \{a,\,\mathrm{clean}\}}
+    \mathrm{VarReg}(z_v), \\
+  \mathcal{L}_{\mathrm{cov}} &= \sum_{v \in \{a,\,\mathrm{clean}\}}
+    \mathrm{CovReg}(z_v),
+\end{align}
+where $\mathrm{VarReg}$ is a hinge on per-dimension batch standard deviation
+(target $\ge 1$) and $\mathrm{CovReg}$ penalizes off-diagonal covariance
+entries.
+The full objective is
+\begin{equation}
+  \mathcal{L}_{\mathrm{mvc}}
+  = \mathcal{L}_{\mathrm{mask}}
+  + \lambda_{\mathrm{inv}} \mathcal{L}_{\mathrm{inv}}
+  + \lambda_{\mathrm{var}} \mathcal{L}_{\mathrm{var}}
+  + \lambda_{\mathrm{cov}} \mathcal{L}_{\mathrm{cov}}.
+\end{equation}
+We report two weightings: \textbf{unit scale}
+($\lambda_{\mathrm{inv}} = \lambda_{\mathrm{var}} = \lambda_{\mathrm{cov}} = 1$)
+and \textbf{VICReg scale}
+($25/25/25$, matching prior VICReg runs in our codebase).
+
+\paragraph{Hybrid B: MSE + SIGReg.}
+Alternatively, we replace $\mathcal{L}_{\mathrm{var}}$ and
+$\mathcal{L}_{\mathrm{cov}}$ with Sketched Isotropic Gaussian Regularization
+(SIGReg) from LeJEPA~\cite{balestriero2025lejepa}:
+\begin{equation}
+  \mathcal{L}_{\mathrm{sig}}
+  = \mathcal{L}_{\mathrm{mask}}
+  + \lambda_{\mathrm{inv}} \mathcal{L}_{\mathrm{inv}}
+  + \lambda_{\mathrm{sig}} \,\mathrm{SIGReg}\big([z_a; z]\big),
+\end{equation}
+where $[z_a; z]$ concatenates both branches along the batch dimension and
+SIGReg matches random 1D projections to a standard Gaussian via an
+Epps--Pulley statistic.
+We use $\lambda_{\mathrm{inv}} = \lambda_{\mathrm{sig}} = 1$ unless noted.
+
+\paragraph{Design rationale.}
+Dual InfoNCE applies instance discrimination twice (mask and augmentation),
+which encourages tight local neighborhoods but can leave class structure
+poorly organized for linear probes.
+Our asymmetric design assigns \emph{contrastive} learning to the JEPA path
+(where masking creates a non-trivial predictive task) and \emph{spread /
+invariance} to the augmentation path (where the task is view matching without
+batch negatives).
+This follows the spirit of JEPA + redundancy-reduction hybrids such as
+C-JEPA~\cite{mo2024cjepa}, but differs in (i) using InfoNCE rather than
+patch-level $\ell_2$ regression on the mask path, and (ii) applying spread
+regularizers on $(z_a, z)$ rather than on corrupt/clean encoder pairs alone.
+
+\subsection{Implementation summary}
+\label{sec:implementation}
+
+\begin{itemize}
+  \item \textbf{Backbone:} SmallResNet encoder ($\sim$2.8M parameters including
+        predictor) on CIFAR-100 ($32{\times}32$).
+  \item \textbf{Optimization:} AdamW, lr $= 3{\times}10^{-4}$, cosine schedule,
+        batch size $256$, $100$ epochs, seed $42$.
+  \item \textbf{Evaluation:} frozen encoder; k-NN@20 (cosine, normalized
+        features) and linear probe (SGD, 50 epochs on train features).
+\end{itemize}

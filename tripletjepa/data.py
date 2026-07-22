@@ -7,7 +7,7 @@ from urllib.request import urlretrieve
 
 import torch
 from PIL import Image
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, Subset
 from torchvision import datasets, transforms
 
 TINY_IMAGENET_URL = "http://cs231n.stanford.edu/tiny-imagenet-200.zip"
@@ -59,6 +59,26 @@ DATASETS: dict[str, DatasetSpec] = {
 }
 
 CIFAR_LIKE = frozenset({"cifar10", "cifar100"})
+
+
+def resolve_global_index(base: Dataset, i: int) -> int:
+    if isinstance(base, Subset):
+        return resolve_global_index(base.dataset, base.indices[i])
+    return i
+
+
+class WithIndex(Dataset):
+    """Append global dataset index to each sample."""
+
+    def __init__(self, base: Dataset) -> None:
+        self.base = base
+
+    def __len__(self) -> int:
+        return len(self.base)
+
+    def __getitem__(self, i: int) -> tuple[torch.Tensor, int, int]:
+        image, label = self.base[i]
+        return image, label, resolve_global_index(self.base, i)
 
 
 def build_transforms(spec: DatasetSpec, train: bool) -> transforms.Compose:
@@ -186,6 +206,7 @@ def get_dataloaders(
     num_workers: int = 2,
     train_subset: int | None = None,
     download: bool = False,
+    return_index: bool = False,
 ) -> tuple[DataLoader, DataLoader, DatasetSpec]:
     if dataset not in DATASETS:
         raise ValueError(f"Unknown dataset {dataset!r}. Choose from {sorted(DATASETS)}")
@@ -207,6 +228,8 @@ def get_dataloaders(
         train_set = torch.utils.data.Subset(
             train_set, range(min(train_subset, len(train_set)))
         )
+    if return_index:
+        train_set = WithIndex(train_set)
 
     train_loader = DataLoader(
         train_set,

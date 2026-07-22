@@ -1,0 +1,14 @@
+{
+  "epoch": 90,
+  "run_name": "latent_infonce_jepa_augment",
+  "training_mode": "latent_infonce_jepa_augment",
+  "dataset": "cifar100",
+  "num_classes": 100,
+  "checkpoint": "results/latent_infonce_jepa_augment/checkpoint_best.pt",
+  "split": "test",
+  "projection": "pca",
+  "normalize": true,
+  "num_points": 5000,
+  "embed_dim": 256,
+  "plot": "results/latent_infonce_jepa_augment/embedding_viz/embedding_test_pca_norm.png"
+}
