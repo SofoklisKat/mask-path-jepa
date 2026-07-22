@@ -116,10 +116,11 @@ to be filled as the unified 200-epoch sweep finishes.
     Uniformity ($w{=}0.5$)          & 0.125 & 0.073 & --- & --- \\
     SwAV                            & --- & --- & --- & --- \\
     \midrule
-    \textbf{Ours: InfoNCE + MVC}    & 0.190$^\ddagger$ & 0.147$^\ddagger$ & --- & --- \\
-    \textbf{Ours: InfoNCE + SIGReg} & 0.179 & \textbf{0.171} & --- & --- \\
+    \textbf{Ours: InfoNCE + MVC}    & \textbf{0.193} & 0.154 & --- & --- \\
+    \textbf{Ours: InfoNCE + SIGReg} & 0.179 & \textbf{0.175} & --- & --- \\
+    \textbf{Ours: InfoNCE + SIGReg (R50)} & 0.095$^\S$ & 0.115$^\S$ & --- & --- \\
     \bottomrule
-  \multicolumn{5}{l}{\footnotesize $^*$@20 epochs; $^\ddagger$@30 epochs for MVC hybrid.}
+  \multicolumn{5}{l}{\footnotesize $^*$@20 epochs; $^\S$@62 epochs, ResNet-50 scratch, batch 128.}
   \end{tabular}
 \end{table*}
 
@@ -152,30 +153,20 @@ Our asymmetric hybrids target the upper-right feasible region: high k-NN
 
 \begin{figure}[t]
   \centering
-  \input{figures/ablation_tradeoff.tex}
-  \caption{k-NN vs.\ linear probe trade-off on CIFAR-100 (SmallResNet).
-  Hollow gray markers: preliminary baselines at ${\leq}100$ epochs;
-  blue square: dual InfoNCE; red triangles: proposed hybrids;
-  orange star: placeholder for unified @200-epoch sweep.
-  Update coordinates from \texttt{history.json} checkpoints.}
+  \includegraphics[width=0.92\linewidth]{figures/ablation_scatter.png}
+  \caption{k-NN vs.\ linear probe trade-off on CIFAR-100 (SmallResNet unless noted).
+  Stars mark the final evaluated epoch per run; curves connect 10-epoch evaluations.}
   \label{fig:tradeoff}
 \end{figure}
 
 \paragraph{Learning curves (same network).}
-Figure~\ref{fig:curves} shows epoch-wise k-NN and linear accuracy for
-representative methods trained on the same architecture.
-We include dual InfoNCE, InfoNCE+SIGReg, and EMA-JEPA as reference curves;
-dashed vertical line marks epoch~100 when continuing to 200.
+Figure~\ref{fig:curves} shows epoch-wise k-NN and linear accuracy for completed runs.
 
 \begin{figure}[t]
   \centering
-  \fbox{\parbox{0.92\linewidth}{\centering\vspace{2.2cm}
-    \small\textbf{[Figure placeholder]}\\
-    Two-panel plot: (left) k-NN@20 vs.\ epoch,
-    (right) linear accuracy vs.\ epoch.\\
-    Generate with \texttt{scripts/plot\_ablation\_curves.py}
-    from checkpoint histories.\vspace{2.2cm}}}
-  \caption{Training curves at 10-epoch intervals (SmallResNet, CIFAR-100).
-  To be populated from the 200-epoch ablation sweep.}
+  \includegraphics[width=\linewidth]{figures/ablation_curves.png}
+  \caption{Training curves at 10-epoch intervals.
+  Left: k-NN@20; right: linear probe.
+  Solid lines: SmallResNet; extend with additional runs as the 200-epoch ablation completes.}
   \label{fig:curves}
 \end{figure}

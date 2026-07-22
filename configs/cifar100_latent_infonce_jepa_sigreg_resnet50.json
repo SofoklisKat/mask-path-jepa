@@ -6,7 +6,7 @@
   "corrupt_schedule": "block",
   "mask_ratio": 0.6,
   "epochs": 100,
-  "batch_size": 256,
+  "batch_size": 128,
   "backbone": "resnet50",
   "jepa_infonce_weight": 1.0,
   "aug_infonce_weight": 0.0,

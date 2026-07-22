@@ -25,17 +25,17 @@ Table~\ref{tab:hybrid} summarizes the two proposed second-term designs at
 
 \begin{table}[t]
   \centering
-  \caption{Proposed asymmetric hybrids vs.\ dual InfoNCE (SmallResNet,
-  CIFAR-100).}
+  \caption{Proposed asymmetric hybrids vs.\ dual InfoNCE (SmallResNet, CIFAR-100).
+  Values from checkpoint histories; SIGReg run continued beyond 100 epochs.}
   \label{tab:hybrid}
-  \begin{tabular}{lccc}
+  \begin{tabular}{lcccr}
     \toprule
-    Method & k-NN@20 & Linear & Epoch \\
+    Method & k-NN@20 & Linear & Epochs & Best@ \\
     \midrule
-    Dual InfoNCE (baseline)     & 0.21--0.23 & 0.103 & 90 \\
-    InfoNCE + MSE + var + cov     & 0.190 & 0.147 & 30 \\
-    InfoNCE + MSE + SIGReg        & 0.179 & \textbf{0.171} & 100 \\
-    InfoNCE + MSE + SIGReg (cont.)& --- & --- & 500 \\
+    Dual InfoNCE (baseline)     & 0.21--0.23 & 0.103 & 100 & ep90 \\
+    InfoNCE + MSE + var + cov     & \textbf{0.193} & 0.154 & 100 & ep50 / ep100 \\
+    InfoNCE + MSE + SIGReg        & 0.179 & \textbf{0.175} & 418 & ep90 / ep390 \\
+    InfoNCE + SIGReg (ResNet-50)  & 0.095 & 0.115 & 62 & ep60 \\
     \bottomrule
   \end{tabular}
 \end{table}
@@ -52,8 +52,7 @@ Decomposed variance--covariance (unit weights) preserves more k-NN; SIGReg
 
 For InfoNCE+SIGReg at epoch~100, the total loss is dominated by
 $\mathcal{L}_{\mathrm{sig}}$ ($\sim$2.33 of $\sim$2.84), with
-$\mathcal{L}_{\mathrm{mask}}\approx 0.24$ and $\mathcal{L}_{\mathrm{inv}}
-\approx 0.27$.
+$\mathcal{L}_{\mathrm{mask}}\approx 0.24$ and $\mathcal{L}_{\mathrm{inv}}\approx 0.27$.
 Mask-path InfoNCE remains well optimized; aug--clean MSE is looser than in
 the MVC hybrid ($\mathcal{L}_{\mathrm{inv}}\approx 0.03$ at epoch~30),
 indicating SIGReg-driven spread without tight augmentation invariance.
