@@ -30,8 +30,8 @@ def main() -> None:
     parser.add_argument(
         "--backbone",
         type=str,
-        choices=["resnet", "resnet50", "vit"],
-        help="Encoder backbone: resnet (SmallResNet), resnet50 (CIFAR-adapted), or vit",
+        choices=["resnet", "resnet18", "resnet50", "vit", "vit_tiny"],
+        help="Encoder backbone: resnet, resnet18, resnet50, vit (custom), or vit_tiny (DeiT-Ti)",
     )
     parser.add_argument("--vit-depth", type=int)
     parser.add_argument("--vit-heads", type=int)
@@ -45,7 +45,7 @@ def main() -> None:
     parser.add_argument(
         "--training-mode",
         type=str,
-        choices=["jepa_ema", "latent_triplet", "latent_vicreg", "latent_sigreg", "latent_uniformity", "latent_triplet_uniformity", "latent_jepa_augment_uniformity", "latent_infonce_jepa_augment", "latent_infonce_jepa_vicreg", "latent_infonce_jepa_mse_var_cov", "latent_infonce_jepa_sigreg", "latent_distortion_ranking"],
+        choices=["jepa_ema", "jepa_gated_centroid_nn", "latent_triplet", "latent_vicreg", "latent_sigreg", "latent_uniformity", "latent_triplet_uniformity", "latent_jepa_augment_uniformity", "latent_infonce_jepa_augment", "latent_infonce_jepa_vicreg", "latent_infonce_jepa_mse_var_cov", "latent_infonce_jepa_sigreg", "latent_distortion_ranking"],
     )
     parser.add_argument("--use-ema-target", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument(

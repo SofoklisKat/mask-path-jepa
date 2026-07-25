@@ -5,7 +5,7 @@ import copy
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torchvision.models import resnet50
+from torchvision.models import resnet18, resnet50
 
 
 class ResidualBlock(nn.Module):
@@ -70,6 +70,26 @@ class SmallResNet(nn.Module):
         x = self.layer2(x)
         x = self.layer3(x)
         return self.head(x)
+
+
+class CifarResNet18(nn.Module):
+    """ResNet-18 adapted for 32x32 inputs (CIFAR-style stem, no ImageNet weights).
+
+    Matches the SCAN / SimCLR-CIFAR backbone convention: 3x3 stride-1 stem, no maxpool.
+    """
+
+    def __init__(self, in_channels: int = 3, embed_dim: int = 512) -> None:
+        super().__init__()
+        net = resnet18(weights=None)
+        net.conv1 = nn.Conv2d(
+            in_channels, 64, kernel_size=3, stride=1, padding=1, bias=False
+        )
+        net.maxpool = nn.Identity()
+        net.fc = nn.Linear(net.fc.in_features, embed_dim)
+        self.net = net
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.net(x)
 
 
 class CifarResNet50(nn.Module):
@@ -184,9 +204,17 @@ def build_encoder(
     name = backbone.lower()
     if name in {"resnet", "small_resnet", "cnn"}:
         return SmallResNet(in_channels, embed_dim)
+    if name in {"resnet18", "resnet_18"}:
+        return CifarResNet18(in_channels, embed_dim)
     if name in {"resnet50", "resnet_50"}:
         return CifarResNet50(in_channels, embed_dim)
-    if name in {"vit", "small_vit"}:
+    if name in {"vit", "small_vit", "vit_tiny", "deit_tiny"}:
+        # vit_tiny / deit_tiny: paper DeiT-Ti defaults if caller left custom small-vit sizes.
+        if name in {"vit_tiny", "deit_tiny"}:
+            embed_dim = 192
+            vit_depth = 12
+            vit_heads = 3
+            vit_mlp_dim = 768
         return SmallViT(
             in_channels=in_channels,
             embed_dim=embed_dim,
@@ -197,7 +225,7 @@ def build_encoder(
             mlp_dim=vit_mlp_dim,
         )
     raise ValueError(
-        f"Unknown backbone={backbone!r}; expected resnet, resnet50, or vit"
+        f"Unknown backbone={backbone!r}; expected resnet, resnet18, resnet50, vit, or vit_tiny"
     )
 
 

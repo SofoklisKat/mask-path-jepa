@@ -12,7 +12,7 @@ from torch.utils.data import DataLoader
 
 from tripletjepa.data import DatasetSpec, get_dataloaders
 from tripletjepa.eval import evaluate_encoder
-from tripletjepa.losses import TripletJEPALoss
+from tripletjepa.losses import TripletJEPALoss, active_nn_tau, gated_centroid_nn_loss
 from tripletjepa.models import TripletJEPA
 from tripletjepa.teacher import (
     TeacherFeatureBank,
@@ -26,6 +26,7 @@ from tripletjepa.views import (
     distortion_ladder,
     instance_negatives,
     make_augmented_view,
+    make_centroid_aug_stack,
     make_corrupt_view,
     scramble_patches,
 )
@@ -49,13 +50,13 @@ class TrainConfig:
 
     # Model
     embed_dim: int = 256
-    backbone: str = "resnet"  # resnet | resnet50 | vit
+    backbone: str = "resnet"  # resnet | resnet18 | resnet50 | vit | vit_tiny
     vit_patch_size: int = 4
     vit_depth: int = 6
     vit_heads: int = 4
     vit_mlp_dim: int = 512
     ema_momentum: float = 0.996
-    training_mode: str = "jepa_ema"  # jepa_ema | latent_triplet | latent_vicreg | latent_sigreg | latent_uniformity | latent_triplet_uniformity | latent_jepa_augment_uniformity | latent_infonce_jepa_augment | latent_infonce_jepa_vicreg | latent_infonce_jepa_mse_var_cov | latent_infonce_jepa_sigreg | latent_distortion_ranking
+    training_mode: str = "jepa_ema"  # jepa_ema | jepa_gated_centroid_nn | latent_triplet | ...
     use_ema_target: bool = True
     anchor_mode: str = "predictor_corrupt"  # predictor_corrupt | encoder_corrupt | encoder_clean
 
@@ -79,6 +80,18 @@ class TrainConfig:
     jepa_infonce_weight: float = 1.0
     aug_infonce_weight: float = 1.0
     infonce_temperature: float = 0.1
+    # Gated centroid-NN (in-batch soft neighbors on aug means)
+    nn_num_augs: int = 6
+    nn_tau: float = 0.995
+    nn_tau_end: float = 0.98
+    nn_k: int = 1
+    nn_weight: float = 1.0
+    nn_mutual: bool = True
+    nn_soft_weight: bool = True
+    nn_encode_chunk: int = 256
+    nn_precompute_augs: bool = True
+    nn_aug_cache_dir: str = "./data/aug_banks"
+    nn_aug_force_recompute: bool = False
     rank_weight: float = 1.0
     rank_similarity: float = 0.9
     rank_transparency: float = 0.5
@@ -135,6 +148,15 @@ def resolve_training_mode(cfg: TrainConfig) -> TrainConfig:
     """Map high-level training modes to encoder/target/anchor settings."""
     if cfg.training_mode == "jepa_ema":
         return cfg
+    if cfg.training_mode == "jepa_gated_centroid_nn":
+        # EMA JEPA + soft/gated in-batch neighbors on per-image aug centroids.
+        cfg.use_ema_target = True
+        if cfg.nn_weight <= 0:
+            cfg.nn_weight = 1.0
+        if cfg.align_weight <= 0:
+            cfg.align_weight = 1.0
+        cfg.triplet_weight = 0.0
+        return cfg
     if cfg.training_mode == "latent_triplet":
         # One encoder, latent-space JEPA + triplet regularizer (no EMA teacher).
         cfg.use_ema_target = False
@@ -185,7 +207,7 @@ def resolve_training_mode(cfg: TrainConfig) -> TrainConfig:
         return cfg
     raise ValueError(
         f"Unknown training_mode={cfg.training_mode!r}; "
-        "expected jepa_ema, latent_triplet, latent_vicreg, latent_sigreg, "
+        "expected jepa_ema, jepa_gated_centroid_nn, latent_triplet, latent_vicreg, latent_sigreg, "
         "latent_uniformity, latent_triplet_uniformity, latent_jepa_augment_uniformity, "
         "latent_infonce_jepa_augment, latent_infonce_jepa_vicreg, latent_infonce_jepa_mse_var_cov, "
         "latent_infonce_jepa_sigreg, or latent_distortion_ranking"
@@ -257,9 +279,14 @@ def train_one_epoch(
     jepa_ema mode (default):
       anchor   = predictor(encoder(corrupt))
       positive = target_encoder(clean).detach()
+
+    jepa_gated_centroid_nn mode:
+      Same JEPA-EMA path, plus soft/gated neighbor loss on per-image aug centroids
+      (M augs → mean embedding; top-k in-batch if sim >= tau, else nn loss = 0).
     """
     model.train()
     use_distortion_ranking = cfg.training_mode == "latent_distortion_ranking"
+    use_gated_centroid_nn = cfg.training_mode == "jepa_gated_centroid_nn"
     totals: dict[str, float] = {"loss": 0.0}
     if not use_distortion_ranking:
         totals["jepa"] = 0.0
@@ -337,15 +364,38 @@ def train_one_epoch(
             totals["aug_align"] = 0.0
     if use_proto:
         totals["swav"] = 0.0
+    if use_gated_centroid_nn and cfg.nn_weight > 0:
+        totals["nn"] = 0.0
+        totals["nn_pairs"] = 0.0
+        totals["nn_mean_sim"] = 0.0
+        totals["nn_frac_gated"] = 0.0
+        totals["nn_tau"] = 0.0
+        totals["nn_active_steps"] = 0.0
+        totals["nn_total_pairs"] = 0.0
+        totals["nn_active_frac"] = 0.0
     if teacher_bank is not None and teacher_weight > 0:
         totals["teacher_align"] = 0.0
     n = 0
+    n_steps = 0
+    nn_active_steps = 0
+    nn_total_pairs = 0
     progress = corrupt_progress(epoch, cfg.epochs)
+    nn_tau = active_nn_tau(epoch, cfg.epochs, cfg.nn_tau, cfg.nn_tau_end)
 
     for batch_idx, batch in enumerate(loader):
+        precomputed_augs = None
         if teacher_bank is not None:
             images, labels, sample_idx = batch
             sample_idx = sample_idx.to(device, non_blocking=True)
+        elif (
+            isinstance(batch, (tuple, list))
+            and len(batch) == 3
+            and torch.is_tensor(batch[2])
+            and batch[2].dim() == 5
+        ):
+            images, labels, precomputed_augs = batch
+            sample_idx = None
+            precomputed_augs = precomputed_augs.to(device, non_blocking=True)
         else:
             images, labels = batch
             sample_idx = None
@@ -520,6 +570,43 @@ def train_one_epoch(
             z_rank_levels,
             global_step,
         )
+        if use_gated_centroid_nn and cfg.nn_weight > 0:
+            if precomputed_augs is not None:
+                stack = precomputed_augs
+            else:
+                stack = make_centroid_aug_stack(
+                    images,
+                    cfg.nn_num_augs,
+                    brightness=cfg.aug_brightness,
+                    contrast=cfg.aug_contrast,
+                    saturation=cfg.aug_saturation,
+                    hue=cfg.aug_hue,
+                )
+            bsz, n_aug, ch, hh, ww = stack.shape
+            flat = stack.reshape(bsz * n_aug, ch, hh, ww)
+            zs = []
+            chunk = max(int(cfg.nn_encode_chunk), 1)
+            for s in range(0, flat.size(0), chunk):
+                zs.append(model.encoder(flat[s : s + chunk]))
+            z_all = torch.cat(zs, dim=0).view(bsz, n_aug, -1)
+            centroids = torch.nn.functional.normalize(z_all.mean(dim=1), dim=-1)
+            l_nn, nn_stats = gated_centroid_nn_loss(
+                centroids,
+                tau=nn_tau,
+                k=cfg.nn_k,
+                mutual=cfg.nn_mutual,
+                soft_weight=cfg.nn_soft_weight,
+            )
+            loss = loss + cfg.nn_weight * l_nn
+            stats["nn"] = l_nn.item()
+            stats["nn_pairs"] = nn_stats["nn_pairs"]
+            stats["nn_mean_sim"] = nn_stats["nn_mean_sim"]
+            stats["nn_frac_gated"] = nn_stats["nn_frac_gated"]
+            stats["nn_tau"] = float(nn_tau)
+            n_pairs = int(nn_stats["nn_pairs"])
+            nn_total_pairs += n_pairs
+            if n_pairs > 0:
+                nn_active_steps += 1
         if teacher_bank is not None and teacher_weight > 0 and sample_idx is not None:
             if z_clean_for_teacher is None:
                 z_clean_for_teacher = model.encoder(images)
@@ -538,11 +625,18 @@ def train_one_epoch(
 
         bs = images.size(0)
         n += bs
+        n_steps += 1
         for k in totals:
-            if k in stats:
+            if k in stats and k not in {"nn_active_steps", "nn_total_pairs", "nn_active_frac"}:
                 totals[k] += stats[k] * bs
 
-    return {k: v / max(n, 1) for k, v in totals.items()}, progress
+    out = {k: v / max(n, 1) for k, v in totals.items()}
+    if use_gated_centroid_nn and cfg.nn_weight > 0:
+        out["nn_active_steps"] = float(nn_active_steps)
+        out["nn_total_pairs"] = float(nn_total_pairs)
+        out["nn_active_frac"] = float(nn_active_steps) / float(max(n_steps, 1))
+        out["nn_steps"] = float(n_steps)
+    return out, progress
 
 
 def resolve_device(device_str: str) -> torch.device:
@@ -708,6 +802,13 @@ def run_training(cfg: TrainConfig) -> dict:
         f"proto_weight={cfg.proto_weight} | "
         f"proto_num={cfg.proto_num}"
     )
+    if cfg.training_mode == "jepa_gated_centroid_nn":
+        print(
+            f"gated_centroid_nn | num_augs={cfg.nn_num_augs} | k={cfg.nn_k} | "
+            f"tau={cfg.nn_tau}→{cfg.nn_tau_end} | weight={cfg.nn_weight} | "
+            f"mutual={cfg.nn_mutual} | soft={cfg.nn_soft_weight} | "
+            f"precompute={cfg.nn_precompute_augs}"
+        )
 
     if cfg.backbone.lower() in {"vit", "small_vit"}:
         print(
@@ -716,14 +817,50 @@ def run_training(cfg: TrainConfig) -> dict:
             f"embed_dim={cfg.embed_dim}"
         )
 
+    # For gated centroid-NN: batch_size may be given as total views (e.g. 768 = 128×6).
+    unique_batch = cfg.batch_size
+    if (
+        cfg.training_mode == "jepa_gated_centroid_nn"
+        and cfg.nn_num_augs > 1
+        and cfg.batch_size % cfg.nn_num_augs == 0
+        and cfg.batch_size >= cfg.nn_num_augs * 16
+    ):
+        unique_batch = cfg.batch_size // cfg.nn_num_augs
+        print(
+            f"batch_size={cfg.batch_size} interpreted as view-batch → "
+            f"{unique_batch} unique images × {cfg.nn_num_augs} augs = {cfg.batch_size} views"
+        )
+
+    precomputed_aug_bank = None
+    if cfg.training_mode == "jepa_gated_centroid_nn" and cfg.nn_precompute_augs:
+        from tripletjepa.data import DATASETS, precompute_centroid_aug_bank
+
+        print("Loading or precomputing centroid augs (disk-cached)...")
+        precomputed_aug_bank = precompute_centroid_aug_bank(
+            cfg.dataset,
+            cfg.data_dir,
+            num_augs=cfg.nn_num_augs,
+            spec=DATASETS[cfg.dataset],
+            download=cfg.download,
+            train_subset=cfg.train_subset,
+            seed=cfg.seed,
+            brightness=cfg.aug_brightness,
+            contrast=cfg.aug_contrast,
+            saturation=cfg.aug_saturation,
+            hue=cfg.aug_hue,
+            cache_dir=cfg.nn_aug_cache_dir,
+            force_recompute=cfg.nn_aug_force_recompute,
+        )
+
     train_loader, test_loader, spec = get_dataloaders(
         cfg.dataset,
         cfg.data_dir,
-        cfg.batch_size,
+        unique_batch,
         cfg.num_workers,
         cfg.train_subset,
         download=cfg.download,
         return_index=cfg.teacher_features_path is not None,
+        precomputed_aug_bank=precomputed_aug_bank,
     )
 
     teacher_bank: TeacherFeatureBank | None = None
@@ -985,7 +1122,17 @@ def run_training(cfg: TrainConfig) -> dict:
                     parts.append(f"d{i} {row[key]:.4f}")
         else:
             parts.append(f"jepa {row['jepa']:.4f}")
-            parts.append("triplet n/a")
+            if "nn" in row:
+                parts.append(f"nn {row['nn']:.4f}")
+                parts.append(
+                    f"nn_on {int(row.get('nn_active_steps', 0))}/"
+                    f"{int(row.get('nn_steps', 0))} "
+                    f"({100.0 * row.get('nn_active_frac', 0.0):.1f}%)"
+                )
+                parts.append(f"nn_pairs_sum {int(row.get('nn_total_pairs', 0))}")
+                parts.append(f"tau {row.get('nn_tau', 0):.4f}")
+            else:
+                parts.append("triplet n/a")
         if cfg.corrupt_schedule == "block_curriculum":
             parts.append(f"mask {row['active_mask_ratio']:.2f}")
         if cfg.corrupt_schedule in {"blur_to_mask", "mask_curriculum"}:

@@ -1,19 +1,25 @@
 {
   "run_name": "single_encoder_jepa",
   "dataset": "cifar100",
+  "training_mode": "jepa_ema",
   "epochs": 100,
   "batch_size": 256,
   "triplet_weight": 0.0,
   "negative_mode": "instance",
   "use_ema_target": false,
   "anchor_mode": "encoder_corrupt",
-  "margin": 0.2,
+  "corrupt_schedule": "block",
   "mask_ratio": 0.6,
+  "align_weight": 1.0,
+  "jepa_infonce_weight": 0.0,
+  "aug_infonce_weight": 0.0,
+  "aug_align_weight": 0.0,
+  "margin": 0.2,
   "embed_dim": 256,
   "lr": 0.0003,
   "eval_every": 10,
   "knn_k": 20,
   "probe_epochs": 50,
   "seed": 42,
-  "output_dir": "./results/paper_cifar100"
+  "output_dir": "./results"
 }
