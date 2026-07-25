@@ -394,6 +394,64 @@ def make_augmented_view(
     return out
 
 
+def make_centroid_aug_stack(
+    x: torch.Tensor,
+    num_augs: int,
+    *,
+    brightness: float = 0.4,
+    contrast: float = 0.4,
+    saturation: float = 0.4,
+    hue: float = 0.1,
+    crop_scale_min: float = 0.7,
+    max_rotate_deg: float = 15.0,
+    noise_std: float = 0.03,
+    p_mask: float = 0.5,
+) -> torch.Tensor:
+    """Build ``num_augs`` strong views per image for centroid-NN mining.
+
+    Returns:
+        Tensor of shape (B, M, C, H, W).
+    """
+    if num_augs < 1:
+        raise ValueError("num_augs must be >= 1")
+    b, c, h, w = x.shape
+    views = []
+    for _ in range(num_augs):
+        out = x.clone()
+        for i in range(b):
+            img = out[i]
+            # random resized crop
+            scale = random.uniform(crop_scale_min, 1.0)
+            ch = max(1, int(round(h * scale)))
+            cw = max(1, int(round(w * scale)))
+            top = random.randint(0, h - ch) if ch < h else 0
+            left = random.randint(0, w - cw) if cw < w else 0
+            img = TF.resized_crop(img, top, left, ch, cw, size=[h, w])
+            # rotation
+            if max_rotate_deg > 0:
+                angle = random.uniform(-max_rotate_deg, max_rotate_deg)
+                img = TF.rotate(img, angle, interpolation=TF.InterpolationMode.BILINEAR, fill=0.0)
+            if random.random() < 0.5:
+                img = TF.hflip(img)
+            img = TF.adjust_brightness(img, 1.0 + random.uniform(-brightness, brightness))
+            img = TF.adjust_contrast(img, 1.0 + random.uniform(-contrast, contrast))
+            img = TF.adjust_saturation(img, 1.0 + random.uniform(-saturation, saturation))
+            img = TF.adjust_hue(img, random.uniform(-hue, hue))
+            # small rectangle mask toward mean
+            if random.random() < p_mask:
+                mh = random.randint(4, max(4, h // 2))
+                mw = random.randint(4, max(4, w // 2))
+                mt = random.randint(0, h - mh)
+                ml = random.randint(0, w - mw)
+                fill = img.mean(dim=(1, 2), keepdim=True)
+                img[:, mt : mt + mh, ml : ml + mw] = fill
+            if noise_std > 0:
+                img = img + torch.randn_like(img) * noise_std
+            out[i] = img.clamp(0.0, 1.0)
+        views.append(out)
+    return torch.stack(views, dim=1)
+
+
 def instance_negatives(z: torch.Tensor) -> torch.Tensor:
     """Unsupervised negative: shuffle batch so z-[i] is another image's embedding."""
     idx = torch.randperm(z.size(0), device=z.device)

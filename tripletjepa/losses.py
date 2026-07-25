@@ -13,6 +13,82 @@ def jepa_cosine_loss(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
     return (1.0 - (pred_n * target_n).sum(dim=-1)).mean()
 
 
+def gated_centroid_nn_loss(
+    centroids: torch.Tensor,
+    *,
+    tau: float,
+    k: int = 1,
+    mutual: bool = True,
+    soft_weight: bool = True,
+) -> tuple[torch.Tensor, dict[str, float]]:
+    """Soft/gated in-batch neighbor loss on per-image aug centroids.
+
+    For each centroid c_i, take up to ``k`` nearest other centroids. Keep a pair
+    only if cosine similarity >= ``tau`` (and optionally mutual top-k). If no
+    pair clears the gate, the loss is 0.
+
+    Args:
+        centroids: (B, D) L2-normalized mean embeddings (one per distinct image).
+        tau: minimum cosine similarity to accept a neighbor.
+        k: max neighbors per image (cap).
+        mutual: require reciprocity in top-k.
+        soft_weight: weight each pair by cosine similarity.
+
+    Returns:
+        loss scalar and stats (nn_pairs, nn_mean_sim, nn_frac_gated).
+    """
+    if centroids.ndim != 2:
+        raise ValueError(f"centroids must be (B, D), got {tuple(centroids.shape)}")
+    b = centroids.size(0)
+    device = centroids.device
+    stats = {"nn_pairs": 0.0, "nn_mean_sim": 0.0, "nn_frac_gated": 0.0}
+    if b < 2:
+        return centroids.new_zeros(()), stats
+
+    c = F.normalize(centroids, dim=-1)
+    sim = c @ c.T
+    sim = sim.clone()
+    sim.fill_diagonal_(-float("inf"))
+
+    kk = min(max(int(k), 1), b - 1)
+    top_sim, top_idx = sim.topk(kk, dim=1)  # (B, kk)
+    gate = top_sim >= float(tau)  # (B, kk)
+
+    if mutual:
+        # j is a neighbor of i only if i appears in j's top-k.
+        eye = torch.arange(b, device=device).unsqueeze(1).expand_as(top_idx)
+        # For each candidate (i, t) -> j=top_idx[i,t], check whether i in top_idx[j]
+        j = top_idx
+        # gather top_idx[j] -> (B, kk, kk); compare to i
+        nbr_of_j = top_idx[j]  # (B, kk, kk)
+        i_in_j = (nbr_of_j == eye.unsqueeze(-1)).any(dim=-1)  # (B, kk)
+        gate = gate & i_in_j
+
+    if not bool(gate.any()):
+        return c.new_zeros(()), stats
+
+    pair_sim = top_sim[gate]
+    cos_dist = 1.0 - pair_sim
+    if soft_weight:
+        loss = (pair_sim.detach() * cos_dist).sum() / pair_sim.numel()
+    else:
+        loss = cos_dist.mean()
+
+    n_pairs = int(gate.sum().item())
+    stats["nn_pairs"] = float(n_pairs)
+    stats["nn_mean_sim"] = float(pair_sim.mean().item())
+    stats["nn_frac_gated"] = float(n_pairs) / float(b * kk)
+    return loss, stats
+
+
+def active_nn_tau(epoch: int, epochs: int, tau_start: float, tau_end: float) -> float:
+    """Linear curriculum on similarity threshold (high → lower)."""
+    if epochs <= 1:
+        return float(tau_end)
+    t = min(max(epoch - 1, 0), epochs - 1) / float(epochs - 1)
+    return float(tau_start + t * (tau_end - tau_start))
+
+
 def triplet_loss(
     anchor: torch.Tensor,
     positive: torch.Tensor,
