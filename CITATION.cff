@@ -1,0 +1,27 @@
+cff-version: 1.2.0
+message: If you use this work, please cite it using the metadata below.
+type: software
+title: "Mask-Path InfoNCE without EMA in a Global Image-Level JEPA"
+authors:
+  - family-names: Katakis
+    given-names: Sofoklis
+    email: kat.sofoklis@gmail.com
+license: MIT
+repository-code: "https://github.com/SofoklisKat/mask-path-jepa"
+url: "https://github.com/SofoklisKat/mask-path-jepa"
+date-released: "2026-09-08"
+version: "0.1.0"
+keywords:
+  - self-supervised learning
+  - JEPA
+  - InfoNCE
+  - CIFAR
+preferred-citation:
+  type: report
+  title: "Mask-Path InfoNCE without EMA in a Global Image-Level JEPA: A CIFAR Study"
+  authors:
+    - family-names: Katakis
+      given-names: Sofoklis
+  year: 2026
+  url: "https://github.com/SofoklisKat/mask-path-jepa"
+  notes: Technical report

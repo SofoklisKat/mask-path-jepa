@@ -24,8 +24,8 @@ from PIL import Image
 from torch.utils.data import Dataset
 from torchvision import datasets, transforms
 
-from tripletjepa.data import DATASETS
-from tripletjepa.models import build_encoder
+from mask_path_jepa.data import DATASETS
+from mask_path_jepa.models import build_encoder
 
 
 def extract_patches(image: torch.Tensor, patch_size: int) -> torch.Tensor:

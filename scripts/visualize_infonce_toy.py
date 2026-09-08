@@ -14,7 +14,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from tripletjepa.losses import infonce_loss
+from mask_path_jepa.losses import infonce_loss
 
 
 def main() -> None:

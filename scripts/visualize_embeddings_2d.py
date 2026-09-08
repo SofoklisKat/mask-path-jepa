@@ -17,9 +17,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
-from tripletjepa.data import get_dataloaders
-from tripletjepa.eval import extract_features
-from tripletjepa.models import TripletJEPA
+from mask_path_jepa.data import get_dataloaders
+from mask_path_jepa.eval import extract_features
+from mask_path_jepa.models import JEPA
 
 
 def resolve_device(device_str: str) -> torch.device:
@@ -43,7 +43,7 @@ def load_encoder_from_checkpoint(checkpoint: Path, device: torch.device) -> tupl
         train_subset=cfg.get("train_subset"),
         download=False,
     )
-    model = TripletJEPA(
+    model = JEPA(
         in_channels=spec.in_channels,
         embed_dim=cfg["embed_dim"],
         ema_momentum=cfg.get("ema_momentum", 0.996),

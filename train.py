@@ -5,8 +5,8 @@ import argparse
 import json
 from pathlib import Path
 
-from tripletjepa.data import DATASETS
-from tripletjepa.train import TrainConfig, run_training
+from mask_path_jepa.data import DATASETS
+from mask_path_jepa.train import TrainConfig, run_training
 
 
 def dataset_choices() -> list[str]:
@@ -14,7 +14,7 @@ def dataset_choices() -> list[str]:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Train Triplet-JEPA")
+    parser = argparse.ArgumentParser(description="Train mask-path JEPA")
     parser.add_argument("--config", type=str, help="JSON config file")
     parser.add_argument("--run-name", type=str)
     parser.add_argument("--dataset", type=str, choices=dataset_choices())

@@ -1,0 +1,92 @@
+[
+  {
+    "config": "configs/robustness_sweep_20260731/cifar10_sigreg_r18_seed123.json",
+    "run_name": "cifar10_sigreg_r18_seed123",
+    "output_dir": "results/robustness_sweep_20260731",
+    "log": "experiments/logs/robustness_sweep_20260731/cifar10_sigreg_r18_seed123.log"
+  },
+  {
+    "config": "configs/robustness_sweep_20260731/cifar10_mvc_r18_seed123.json",
+    "run_name": "cifar10_mvc_r18_seed123",
+    "output_dir": "results/robustness_sweep_20260731",
+    "log": "experiments/logs/robustness_sweep_20260731/cifar10_mvc_r18_seed123.log"
+  },
+  {
+    "config": "configs/robustness_sweep_20260731/cifar10_vicreg_r18_seed123.json",
+    "run_name": "cifar10_vicreg_r18_seed123",
+    "output_dir": "results/robustness_sweep_20260731",
+    "log": "experiments/logs/robustness_sweep_20260731/cifar10_vicreg_r18_seed123.log"
+  },
+  {
+    "config": "configs/robustness_sweep_20260731/cifar10_ema_r18_seed123.json",
+    "run_name": "cifar10_ema_r18_seed123",
+    "output_dir": "results/robustness_sweep_20260731",
+    "log": "experiments/logs/robustness_sweep_20260731/cifar10_ema_r18_seed123.log"
+  },
+  {
+    "config": "configs/robustness_sweep_20260731/cifar10_mask_nce_r18_seed123.json",
+    "run_name": "cifar10_mask_nce_r18_seed123",
+    "output_dir": "results/robustness_sweep_20260731",
+    "log": "experiments/logs/robustness_sweep_20260731/cifar10_mask_nce_r18_seed123.log"
+  },
+  {
+    "config": "configs/robustness_sweep_20260731/cifar10_cos_aug_nce_r18_seed123.json",
+    "run_name": "cifar10_cos_aug_nce_r18_seed123",
+    "output_dir": "results/robustness_sweep_20260731",
+    "log": "experiments/logs/robustness_sweep_20260731/cifar10_cos_aug_nce_r18_seed123.log"
+  },
+  {
+    "config": "configs/robustness_sweep_20260731/cifar10_cos_only_r18_seed7.json",
+    "run_name": "cifar10_cos_only_r18_seed7",
+    "output_dir": "results/robustness_sweep_20260731",
+    "log": "experiments/logs/robustness_sweep_20260731/cifar10_cos_only_r18_seed7.log"
+  },
+  {
+    "config": "configs/robustness_sweep_20260731/cifar10_aug_nce_only_r18_seed42.json",
+    "run_name": "cifar10_aug_nce_only_r18_seed42",
+    "output_dir": "results/robustness_sweep_20260731",
+    "log": "experiments/logs/robustness_sweep_20260731/cifar10_aug_nce_only_r18_seed42.log"
+  },
+  {
+    "config": "configs/robustness_sweep_20260731/cifar10_aug_nce_only_r18_seed123.json",
+    "run_name": "cifar10_aug_nce_only_r18_seed123",
+    "output_dir": "results/robustness_sweep_20260731",
+    "log": "experiments/logs/robustness_sweep_20260731/cifar10_aug_nce_only_r18_seed123.log"
+  },
+  {
+    "config": "configs/robustness_sweep_20260731/cifar100_ema_r18_seed123.json",
+    "run_name": "cifar100_ema_r18_seed123",
+    "output_dir": "results/robustness_sweep_20260731",
+    "log": "experiments/logs/robustness_sweep_20260731/cifar100_ema_r18_seed123.log"
+  },
+  {
+    "config": "configs/robustness_sweep_20260731/cifar100_mask_nce_r18_seed123.json",
+    "run_name": "cifar100_mask_nce_r18_seed123",
+    "output_dir": "results/robustness_sweep_20260731",
+    "log": "experiments/logs/robustness_sweep_20260731/cifar100_mask_nce_r18_seed123.log"
+  },
+  {
+    "config": "configs/robustness_sweep_20260731/cifar100_cos_aug_nce_r18_seed123.json",
+    "run_name": "cifar100_cos_aug_nce_r18_seed123",
+    "output_dir": "results/robustness_sweep_20260731",
+    "log": "experiments/logs/robustness_sweep_20260731/cifar100_cos_aug_nce_r18_seed123.log"
+  },
+  {
+    "config": "configs/robustness_sweep_20260731/cifar100_cos_only_r18_seed7.json",
+    "run_name": "cifar100_cos_only_r18_seed7",
+    "output_dir": "results/robustness_sweep_20260731",
+    "log": "experiments/logs/robustness_sweep_20260731/cifar100_cos_only_r18_seed7.log"
+  },
+  {
+    "config": "configs/robustness_sweep_20260731/cifar100_aug_nce_only_r18_seed42.json",
+    "run_name": "cifar100_aug_nce_only_r18_seed42",
+    "output_dir": "results/robustness_sweep_20260731",
+    "log": "experiments/logs/robustness_sweep_20260731/cifar100_aug_nce_only_r18_seed42.log"
+  },
+  {
+    "config": "configs/robustness_sweep_20260731/cifar100_aug_nce_only_r18_seed123.json",
+    "run_name": "cifar100_aug_nce_only_r18_seed123",
+    "output_dir": "results/robustness_sweep_20260731",
+    "log": "experiments/logs/robustness_sweep_20260731/cifar100_aug_nce_only_r18_seed123.log"
+  }
+]
