@@ -19,10 +19,10 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from tripletjepa.data import get_dataloaders
-from tripletjepa.eval import extract_features
-from tripletjepa.losses import uniformity_loss
-from tripletjepa.models import TripletJEPA
+from mask_path_jepa.data import get_dataloaders
+from mask_path_jepa.eval import extract_features
+from mask_path_jepa.losses import uniformity_loss
+from mask_path_jepa.models import JEPA
 
 
 def load_encoder(checkpoint: Path, device: torch.device) -> torch.nn.Module:
@@ -35,7 +35,7 @@ def load_encoder(checkpoint: Path, device: torch.device) -> torch.nn.Module:
         num_workers=2,
         download=False,
     )
-    model = TripletJEPA(
+    model = JEPA(
         in_channels=spec.in_channels,
         embed_dim=cfg["embed_dim"],
         use_ema_target=cfg.get("use_ema_target", True),

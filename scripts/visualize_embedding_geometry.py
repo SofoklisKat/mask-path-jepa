@@ -16,9 +16,9 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from tripletjepa.data import get_dataloaders
-from tripletjepa.eval import extract_features, knn_predict
-from tripletjepa.models import TripletJEPA
+from mask_path_jepa.data import get_dataloaders
+from mask_path_jepa.eval import extract_features, knn_predict
+from mask_path_jepa.models import JEPA
 
 
 def resolve_device(s: str) -> torch.device:
@@ -37,7 +37,7 @@ def load_encoder(checkpoint: Path, device: torch.device) -> tuple[torch.nn.Modul
         num_workers=2,
         download=False,
     )
-    model = TripletJEPA(
+    model = JEPA(
         in_channels=spec.in_channels,
         embed_dim=cfg["embed_dim"],
         ema_momentum=cfg.get("ema_momentum", 0.996),

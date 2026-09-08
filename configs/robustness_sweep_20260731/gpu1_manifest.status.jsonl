@@ -1,0 +1,12 @@
+{"time": "2026-07-31T12:54:49.864139+00:00", "event": "start", "run_name": "cifar10_sigreg_r18_seed123", "device": "cuda:1"}
+{"time": "2026-07-31T16:15:19.346101+00:00", "event": "start", "run_name": "cifar10_sigreg_r18_seed123", "device": "cuda:1"}
+{"time": "2026-07-31T19:34:24.688420+00:00", "event": "finish", "run_name": "cifar10_sigreg_r18_seed123", "exit_code": 0}
+{"time": "2026-07-31T19:34:24.688636+00:00", "event": "start", "run_name": "cifar10_mvc_r18_seed123", "device": "cuda:1"}
+{"time": "2026-07-31T22:51:40.117851+00:00", "event": "finish", "run_name": "cifar10_mvc_r18_seed123", "exit_code": 0}
+{"time": "2026-07-31T22:51:40.118048+00:00", "event": "start", "run_name": "cifar10_vicreg_r18_seed123", "device": "cuda:1"}
+{"time": "2026-08-01T02:08:42.203958+00:00", "event": "finish", "run_name": "cifar10_vicreg_r18_seed123", "exit_code": 0}
+{"time": "2026-08-01T02:08:42.204146+00:00", "event": "start", "run_name": "cifar10_ema_r18_seed123", "device": "cuda:1"}
+{"time": "2026-08-01T03:00:54.352946+00:00", "event": "finish", "run_name": "cifar10_ema_r18_seed123", "exit_code": 0}
+{"time": "2026-08-01T03:00:54.353135+00:00", "event": "start", "run_name": "cifar10_mask_nce_r18_seed123", "device": "cuda:1"}
+{"time": "2026-08-01T05:43:13.388350+00:00", "event": "finish", "run_name": "cifar10_mask_nce_r18_seed123", "exit_code": 0}
+{"time": "2026-08-01T05:43:13.388538+00:00", "event": "start", "run_name": "cifar10_cos_aug_nce_r18_seed123", "device": "cuda:1"}

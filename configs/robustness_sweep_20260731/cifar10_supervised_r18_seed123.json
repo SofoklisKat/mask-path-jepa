@@ -1,0 +1,22 @@
+{
+  "run_name": "cifar10_supervised_r18_seed123",
+  "dataset": "cifar10",
+  "data_dir": "./data",
+  "download": true,
+  "backbone": "resnet18",
+  "embed_dim": 512,
+  "batch_size": 256,
+  "epochs": 100,
+  "lr": 0.1,
+  "weight_decay": 5e-4,
+  "momentum": 0.9,
+  "warmup_epochs": 5,
+  "min_lr": 1e-4,
+  "num_workers": 4,
+  "seed": 123,
+  "eval_every": 10,
+  "knn_k": 20,
+  "probe_epochs": 50,
+  "output_dir": "./results",
+  "log_every": 50
+}

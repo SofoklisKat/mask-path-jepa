@@ -3,9 +3,9 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "tripletjepa"
+name = "mask-path-jepa"
 version = "0.1.0"
-description = "Margin-regularized JEPA for low-resource SSL experiments"
+description = "Mask-path InfoNCE without EMA in a global image-level JEPA"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
@@ -14,7 +14,7 @@ dependencies = [
 ]
 
 [project.scripts]
-tripletjepa-train = "train:main"
+mask-path-jepa-train = "train:main"
 
 [tool.setuptools.packages.find]
-include = ["tripletjepa*"]
+include = ["mask_path_jepa*"]

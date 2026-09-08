@@ -222,3 +222,18 @@ ssl_jepa_triplet/
 # Experiment outputs and datasets
 results/
 data/
+logs/
+.pydeps/
+.tools/
+experiments/logs/
+experiments/runs.jsonl
+
+# LaTeX build artifacts
+paper/*.aux
+paper/*.bbl
+paper/*.blg
+paper/*.out
+paper/*.log
+paper/*.synctex.gz
+paper/main.pdf
+paper/review.md

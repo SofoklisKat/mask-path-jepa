@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Download datasets for Triplet-JEPA (run on server or when you want local copies)."""
+"""Download datasets for Mask-Path JEPA (run on server or when you want local copies)."""
 from __future__ import annotations
 
 import argparse
 from pathlib import Path
 
-from tripletjepa.data import DATASETS, get_dataloaders
+from mask_path_jepa.data import DATASETS, get_dataloaders
 
 
 def download_dataset(name: str, data_dir: str) -> None:
@@ -28,7 +28,7 @@ def download_dataset(name: str, data_dir: str) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Download Triplet-JEPA datasets")
+    parser = argparse.ArgumentParser(description="Download datasets")
     parser.add_argument(
         "--dataset",
         required=True,

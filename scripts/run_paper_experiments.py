@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""Run the full Triplet-JEPA experiment suite and aggregate results."""
+"""Run the full Mask-Path JEPA experiment suite and aggregate results."""
 from __future__ import annotations
 
 import argparse
 import json
 from pathlib import Path
 
-from tripletjepa.data import DATASETS
-from tripletjepa.train import TrainConfig, run_training
+from mask_path_jepa.data import DATASETS
+from mask_path_jepa.train import TrainConfig, run_training
 
 # Shared hyperparameters merged into every preset (dataset-specific overrides below).
 BASE_DEFAULTS: dict = {
@@ -451,7 +451,7 @@ def resolve_suite(name: str, only: list[str] | None) -> list[str]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Run Triplet-JEPA experiment suites and aggregate results."
+        description="Run Mask-Path JEPA experiment suites and aggregate results."
     )
     parser.add_argument("--dataset", default="cifar100", choices=sorted(DATASETS))
     parser.add_argument("--epochs", type=int, default=None)

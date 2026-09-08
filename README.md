@@ -1,93 +1,95 @@
-# TripletJEPA
+# Mask-Path InfoNCE without EMA in a Global Image-Level JEPA
 
-**Margin-regularized Joint-Embedding Predictive Architectures** for self-supervised image representations.
+**A CIFAR study** — technical report (2026).
 
-Combines JEPA latent prediction (corrupt → clean embedding) with triplet margin loss for better embedding geometry — designed for **low-resource, paper-grade** experiments on CIFAR-10.
+Joint-Embedding Predictive Architectures (JEPAs) usually stabilize latent
+prediction with an EMA teacher. This repository studies a simpler alternative:
+apply **InfoNCE on the masked predictive pair** of a **single** ResNet-18, with
+stop-gradient targets and no EMA.
 
-## Datasets
+Paper source: [`paper/main.tex`](paper/main.tex) · PDF: build with [`paper/build.sh`](paper/build.sh)
 
-| Dataset | Classes | Size | Download | Config |
-|---------|---------|------|----------|--------|
-| `cifar10` | 10 | 32×32 | `--download` | `configs/cifar10_triplet_jepa.json` |
-| `cifar100` | 100 | 32×32 | `--download` (~169 MB) | `configs/cifar100_triplet_jepa.json` |
-| `tiny_imagenet` | 200 | 64×64 | `--download` (~237 MB) | `configs/tiny_imagenet_triplet_jepa.json` |
-| `imagenet` | 1000 | resized 64×64 | manual copy | `configs/imagenet_triplet_jepa.json` |
-| `mnist` | 10 | 28×28 | `--download` | — |
+## Results
 
-Downloads are **off by default**. Use `--download` when training, or download first:
+CIFAR-10, ResNet-18, 100 epochs, frozen encoder. Mean ± sample std over seeds 42, 7, and 123.
 
-```bash
-# Download only (recommended first step)
-PYTHONPATH=. python scripts/download_dataset.py --dataset cifar100
+| Method | k-NN@20 | Linear probe |
+|--------|---------|--------------|
+| **Mask-path InfoNCE (no EMA)** | **42.6 ± 3.6%** | **43.0 ± 3.4%** |
+| EMA cosine JEPA | 41.6 ± 2.9% | 41.3 ± 2.7% |
+| Cosine JEPA + aug-path InfoNCE (no EMA) | 40.2 ± 1.0% | 39.9 ± 1.9% |
+| Cosine JEPA + VICReg (no EMA) | 37.4 ± 0.4% | 39.3 ± 0.7% |
+| Supervised CE (upper bound) | 94.9 ± 0.1% | 94.8 ± 0.1% |
 
-# Train with download if missing
-PYTHONPATH=. python train.py --config configs/cifar100_triplet_jepa.json --download
+The mask-path means are slightly higher than EMA, but the seed ranges overlap.
+CIFAR-100 (seed 42 only) shows the same ranking: 15.5% k-NN vs 12.5% for EMA.
+
+## Method
+
+```
+z_c     = encoder(clean)
+ẑ_m    = predictor(encoder(masked))     # mask ratio 0.6
+L_NCE   = InfoNCE(ẑ_m, sg(z_c); τ = 0.1)
 ```
 
-```bash
-# CIFAR-100
-PYTHONPATH=. python scripts/download_dataset.py --dataset cifar100
-PYTHONPATH=. python train.py --config configs/cifar100_triplet_jepa.json
-
-# Tiny ImageNet
-PYTHONPATH=. python scripts/download_dataset.py --dataset tiny_imagenet
-PYTHONPATH=. python train.py --config configs/tiny_imagenet_triplet_jepa.json
-
-# ImageNet — place data at data/imagenet/train/<class>/ and data/imagenet/val/<class>/
-PYTHONPATH=. python train.py --config configs/imagenet_triplet_jepa.json
-```
-
-Full ImageNet is ~150 GB; the config uses 64×64 resize + optional `train_subset` for low-resource runs.
+One encoder, no EMA. The predictor is discarded at evaluation. Contrast is
+applied to the **mask path**, not to a separate augmentation view.
 
 ## Quick start
 
 ```bash
 pip install -r requirements.txt
 
-# Validate pipeline (~5 min)
-python train.py --config configs/quick_smoke.json
+# Tiny MNIST demo (mask-path InfoNCE, no EMA)
+python examples/mask_path_infonce_mnist.py --epochs 5
 
-# Train Triplet-JEPA on CIFAR-10
-python train.py --config configs/cifar10_triplet_jepa.json
-
-# Run all baselines + generate results table
-python scripts/run_paper_experiments.py --quick   # fast
-python scripts/run_paper_experiments.py         # full (100 epochs)
+# Paper method on CIFAR-10
+PYTHONPATH=. python train.py --config configs/cifar10_mask_path_infonce.json --download
 ```
 
-## Method
+Frozen-encoder evaluation is built into training: **k-NN@20** (cosine) and a
+linear probe on the standard CIFAR split.
 
-```
-L = L_JEPA + λ · L_triplet
-L_JEPA     = 1 - cos(predictor(encoder(corrupt)), target_encoder(clean))
-L_triplet  = relu(||a-p||² - ||a-n||² + margin)
-```
+## Paper configs
 
-See [EXPERIMENTS.md](EXPERIMENTS.md) for the full protocol and [ssl_jepa_triplet/NOTES.md](ssl_jepa_triplet/NOTES.md) for literature notes.
+| Config | Role in the report |
+|--------|--------------------|
+| `configs/cifar10_mask_path_infonce.json` | Proposed: mask-path InfoNCE, no EMA |
+| `configs/cifar10_jepa_resnet18.json` | EMA cosine JEPA reference |
+| `configs/cifar10_latent_infonce_jepa.json` | Cosine JEPA + augmentation-path InfoNCE |
+| `configs/cifar10_jepa_vicreg.json` | Cosine JEPA + VICReg |
+| `configs/cifar10_jepa_sigreg.json` | Cosine JEPA + SIGReg |
+| `configs/cifar10_jepa_mse_var_cov.json` | Cosine JEPA + MSE/var/cov |
+| `configs/cifar10_supervised_resnet18.json` | Supervised CE upper bound |
+| `configs/cifar100_mask_path_infonce.json` | CIFAR-100 mask-path run (single seed) |
 
-## Project layout
-
-```
-tripletjepa/          # library (models, losses, train, eval)
-configs/              # JSON experiment configs
-scripts/              # paper experiment suite
-examples/             # minimal MNIST tutorial
-EXPERIMENTS.md        # reproducible paper protocol
-```
-
-## Evaluation
-
-Frozen encoder only:
-- **k-NN@20** (cosine, DINO-style)
-- **Linear probe** (SGD classifier on train features)
+Earlier exploration configs live under `configs/initial_exps/`.
 
 ## Citation
 
+GitHub reads [`CITATION.cff`](CITATION.cff) and offers a **Cite this repository**
+button (APA and BibTeX). For papers, use:
+
 ```bibtex
-@misc{tripletjepa2026,
-  title={Margin-Regularized Joint-Embedding Predictive Architectures},
-  author={...},
-  year={2026},
-  note={Challenges Paper 2026}
+@misc{katakis2026maskpath,
+  title        = {Mask-Path InfoNCE without EMA in a Global Image-Level JEPA: A CIFAR Study},
+  author       = {Katakis, Sofoklis},
+  year         = {2026},
+  howpublished = {\url{https://github.com/SofoklisKat/mask-path-jepa}},
+  note         = {Technical report}
 }
 ```
+
+## Layout
+
+```
+mask_path_jepa/   # encoder, losses, training, evaluation
+configs/          # paper configs + archived explorations
+paper/            # LaTeX source for the report
+examples/         # MNIST mask-path demo
+scripts/          # download, plots, experiment launchers
+```
+
+## License
+
+MIT. See [LICENSE](LICENSE).

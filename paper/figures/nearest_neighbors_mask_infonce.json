@@ -1,0 +1,153 @@
+{
+  "checkpoint": "results/reruns_20260729/rerun_20260729_mask_only_infonce/checkpoint_best.pt",
+  "epoch": 80,
+  "seed": 42,
+  "neighbors": 5,
+  "metric": "cosine",
+  "queries": [
+    {
+      "query_index": 8214,
+      "query_label": "automobile",
+      "neighbors": [
+        {
+          "rank": 1,
+          "train_index": 30006,
+          "label": "automobile",
+          "cosine": 0.924868106842041
+        },
+        {
+          "rank": 2,
+          "train_index": 31838,
+          "label": "truck",
+          "cosine": 0.9179826378822327
+        },
+        {
+          "rank": 3,
+          "train_index": 16853,
+          "label": "automobile",
+          "cosine": 0.9140695333480835
+        },
+        {
+          "rank": 4,
+          "train_index": 18271,
+          "label": "airplane",
+          "cosine": 0.8984872102737427
+        },
+        {
+          "rank": 5,
+          "train_index": 39876,
+          "label": "truck",
+          "cosine": 0.8983283042907715
+        }
+      ]
+    },
+    {
+      "query_index": 3698,
+      "query_label": "ship",
+      "neighbors": [
+        {
+          "rank": 1,
+          "train_index": 8138,
+          "label": "ship",
+          "cosine": 0.9451506733894348
+        },
+        {
+          "rank": 2,
+          "train_index": 8329,
+          "label": "ship",
+          "cosine": 0.9398411512374878
+        },
+        {
+          "rank": 3,
+          "train_index": 7118,
+          "label": "ship",
+          "cosine": 0.9300751686096191
+        },
+        {
+          "rank": 4,
+          "train_index": 48877,
+          "label": "ship",
+          "cosine": 0.9297375679016113
+        },
+        {
+          "rank": 5,
+          "train_index": 14318,
+          "label": "ship",
+          "cosine": 0.9262562394142151
+        }
+      ]
+    },
+    {
+      "query_index": 2282,
+      "query_label": "truck",
+      "neighbors": [
+        {
+          "rank": 1,
+          "train_index": 15274,
+          "label": "truck",
+          "cosine": 0.9565213322639465
+        },
+        {
+          "rank": 2,
+          "train_index": 49910,
+          "label": "ship",
+          "cosine": 0.933266818523407
+        },
+        {
+          "rank": 3,
+          "train_index": 44564,
+          "label": "truck",
+          "cosine": 0.9296296834945679
+        },
+        {
+          "rank": 4,
+          "train_index": 11169,
+          "label": "airplane",
+          "cosine": 0.9052047729492188
+        },
+        {
+          "rank": 5,
+          "train_index": 34134,
+          "label": "truck",
+          "cosine": 0.9035114049911499
+        }
+      ]
+    },
+    {
+      "query_index": 3217,
+      "query_label": "horse",
+      "neighbors": [
+        {
+          "rank": 1,
+          "train_index": 12,
+          "label": "horse",
+          "cosine": 0.9313380718231201
+        },
+        {
+          "rank": 2,
+          "train_index": 49219,
+          "label": "airplane",
+          "cosine": 0.9148062467575073
+        },
+        {
+          "rank": 3,
+          "train_index": 32417,
+          "label": "horse",
+          "cosine": 0.9142436981201172
+        },
+        {
+          "rank": 4,
+          "train_index": 8810,
+          "label": "airplane",
+          "cosine": 0.9117146730422974
+        },
+        {
+          "rank": 5,
+          "train_index": 14592,
+          "label": "airplane",
+          "cosine": 0.9107235670089722
+        }
+      ]
+    }
+  ]
+}

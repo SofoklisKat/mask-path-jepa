@@ -27,8 +27,8 @@ from PIL import Image
 from torch.utils.data import Dataset, Subset
 from torchvision import datasets, transforms
 
-from tripletjepa.data import DATASETS
-from tripletjepa.models import build_encoder
+from mask_path_jepa.data import DATASETS
+from mask_path_jepa.models import build_encoder
 
 
 def denormalize(tensor: torch.Tensor, mean: tuple[float, ...], std: tuple[float, ...]) -> np.ndarray:

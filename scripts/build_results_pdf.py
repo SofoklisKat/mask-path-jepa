@@ -159,7 +159,7 @@ Completed runs loaded from results/*/checkpoint_last.pt
     with PdfPages(out) as pdf:
         text_page(
             pdf,
-            "TripletJEPA — Results Summary",
+            "JEPA — Results Summary",
             protocol + "\n\nGenerated from checkpoint histories.\nLaTeX source: paper/main.tex",
         )
         table_page(pdf, runs)

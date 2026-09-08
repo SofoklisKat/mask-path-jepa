@@ -12,7 +12,7 @@ import numpy as np
 import torch
 import torchvision
 
-from tripletjepa.views import block_mask, scramble_patches
+from mask_path_jepa.views import block_mask, scramble_patches
 
 
 def tensor_to_img(x: torch.Tensor) -> np.ndarray:

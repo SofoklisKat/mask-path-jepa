@@ -19,7 +19,7 @@ from torch.utils.data import DataLoader, Dataset, Subset
 from torchvision import datasets, transforms
 from torchvision.transforms import InterpolationMode
 
-from tripletjepa.teacher import IMAGENET_MEAN, IMAGENET_STD, encode_teacher_batch, load_dinov2
+from mask_path_jepa.teacher import IMAGENET_MEAN, IMAGENET_STD, encode_teacher_batch, load_dinov2
 
 
 def resolve_global_index(base: Dataset, i: int) -> int:

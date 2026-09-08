@@ -10,7 +10,7 @@ import numpy as np
 import torch
 import torchvision
 
-from tripletjepa.views import make_corrupt_view
+from mask_path_jepa.views import make_corrupt_view
 
 
 def draw_patch_grid(ax, patch_size: int, color: str = "yellow", alpha: float = 0.35) -> None:
