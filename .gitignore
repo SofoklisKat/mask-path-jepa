@@ -235,5 +235,4 @@ paper/*.blg
 paper/*.out
 paper/*.log
 paper/*.synctex.gz
-paper/main.pdf
 paper/review.md

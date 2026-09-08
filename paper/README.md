@@ -7,7 +7,7 @@ cd paper
 ./build.sh
 ```
 
-Output: `paper/main.pdf`.
+Output (also tracked in the repo): [`main.pdf`](main.pdf).
 
 Proposed training config: `configs/cifar10_mask_path_infonce.json`
 (mask-path InfoNCE, one encoder, no EMA).

@@ -23,5 +23,9 @@ preferred-citation:
     - family-names: Katakis
       given-names: Sofoklis
   year: 2026
-  url: "https://github.com/SofoklisKat/mask-path-jepa"
+  url: "https://github.com/SofoklisKat/mask-path-jepa/blob/main/paper/main.pdf"
   notes: Technical report
+  identifiers:
+    - type: url
+      value: "https://github.com/SofoklisKat/mask-path-jepa/blob/main/paper/main.pdf"
+      description: PDF

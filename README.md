@@ -7,7 +7,7 @@ prediction with an EMA teacher. This repository studies a simpler alternative:
 apply **InfoNCE on the masked predictive pair** of a **single** ResNet-18, with
 stop-gradient targets and no EMA.
 
-Paper source: [`paper/main.tex`](paper/main.tex) · PDF: build with [`paper/build.sh`](paper/build.sh)
+Paper: [`paper/main.pdf`](paper/main.pdf) · source: [`paper/main.tex`](paper/main.tex)
 
 ## Results
 
@@ -75,8 +75,8 @@ button (APA and BibTeX). For papers, use:
   title        = {Mask-Path InfoNCE without EMA in a Global Image-Level JEPA: A CIFAR Study},
   author       = {Katakis, Sofoklis},
   year         = {2026},
-  howpublished = {\url{https://github.com/SofoklisKat/mask-path-jepa}},
-  note         = {Technical report}
+  howpublished = {Technical report},
+  url          = {https://github.com/SofoklisKat/mask-path-jepa/blob/main/paper/main.pdf}
 }
 ```
 
@@ -85,7 +85,7 @@ button (APA and BibTeX). For papers, use:
 ```
 mask_path_jepa/   # encoder, losses, training, evaluation
 configs/          # paper configs + archived explorations
-paper/            # LaTeX source for the report
+paper/            # report PDF (main.pdf) and LaTeX source
 examples/         # MNIST mask-path demo
 scripts/          # download, plots, experiment launchers
 ```
