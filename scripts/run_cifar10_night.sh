@@ -23,11 +23,7 @@ STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 LOG_DIR="experiments/logs"
 mkdir -p "$LOG_DIR" experiments results
 
-if [[ -x /home/sofoklis/miniconda3/bin/python ]]; then
-  PYTHON="${PYTHON:-/home/sofoklis/miniconda3/bin/python}"
-else
-  PYTHON="${PYTHON:-python3}"
-fi
+PYTHON="${PYTHON:-python3}"
 
 EXTRA=()
 if [[ -n "$EPOCHS" ]]; then

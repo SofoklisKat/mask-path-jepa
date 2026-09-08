@@ -1,9 +1,10 @@
 # Mask-Path InfoNCE without EMA in a Global Image-Level JEPA
 
-**A CIFAR study** — technical report (2026).
+**A CIFAR study** — technical report (2026). This is a small-scale, matched
+protocol on ResNet-18, not a large-scale SSL method.
 
 Joint-Embedding Predictive Architectures (JEPAs) usually stabilize latent
-prediction with an EMA teacher. This repository studies a simpler alternative:
+prediction with an EMA teacher. This repository tests a simpler alternative:
 apply **InfoNCE on the masked predictive pair** of a **single** ResNet-18, with
 stop-gradient targets and no EMA.
 
@@ -15,14 +16,13 @@ CIFAR-10, ResNet-18, 100 epochs, frozen encoder. Mean ± sample std over seeds 4
 
 | Method | k-NN@20 | Linear probe |
 |--------|---------|--------------|
-| **Mask-path InfoNCE (no EMA)** | **42.6 ± 3.6%** | **43.0 ± 3.4%** |
+| Mask-path InfoNCE (no EMA) | 42.6 ± 3.6% | 43.0 ± 3.4% |
 | EMA cosine JEPA | 41.6 ± 2.9% | 41.3 ± 2.7% |
 | Cosine JEPA + aug-path InfoNCE (no EMA) | 40.2 ± 1.0% | 39.9 ± 1.9% |
 | Cosine JEPA + VICReg (no EMA) | 37.4 ± 0.4% | 39.3 ± 0.7% |
 | Supervised CE (upper bound) | 94.9 ± 0.1% | 94.8 ± 0.1% |
 
-The mask-path means are slightly higher than EMA, but the seed ranges overlap.
-CIFAR-100 (seed 42 only) shows the same ranking: 15.5% k-NN vs 12.5% for EMA.
+Mask-path InfoNCE has slightly higher means than EMA, but the seed ranges overlap, so this is not a decisive win. Accuracy is also far below the supervised upper bound. CIFAR-100 (seed 42 only) shows the same ranking: 15.5% k-NN vs 12.5% for EMA. The report does not claim ImageNet-scale validity.
 
 ## Method
 

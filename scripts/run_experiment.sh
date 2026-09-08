@@ -35,11 +35,7 @@ if [[ ! -f "$CONFIG" ]]; then
 fi
 
 TRAIN_SCRIPT="${TRAIN_SCRIPT:-train.py}"
-if [[ -x /home/sofoklis/miniconda3/bin/python ]]; then
-  PYTHON="${PYTHON:-/home/sofoklis/miniconda3/bin/python}"
-else
-  PYTHON="${PYTHON:-python3}"
-fi
+PYTHON="${PYTHON:-python3}"
 
 RUN_NAME="$("$PYTHON" -c "import json; print(json.load(open('$CONFIG'))['run_name'])")"
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
